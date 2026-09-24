@@ -1,0 +1,25 @@
+# Normalise line endings for text; let git detect the rest.
+* text=auto eol=lf
+
+# ---- Binary reconstruction artifacts: never diff or merge ----
+*.ply       binary
+*.bin       binary
+*.db        binary
+*.npy       binary
+*.npz       binary
+
+# ---- Images ----
+*.jpg       binary
+*.jpeg      binary
+*.png       binary
+
+# ---- Huge generated COLMAP text exports ----
+# These are machine-written and run to millions of lines; diffing them is
+# never useful and makes `git log -p` unusable.
+data/benchmark/sparse_txt/*.txt   -diff -merge linguist-generated
+outputs/**                        -diff linguist-generated
+
+# ---- Language statistics ----
+# Frozen research scripts shouldn't dominate the repo's language breakdown.
+experiments/**   linguist-vendored
+docs/**          linguist-documentation

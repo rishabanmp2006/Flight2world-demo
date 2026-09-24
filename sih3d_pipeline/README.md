@@ -1,0 +1,98 @@
+# sih3d_pipeline — single-pass drone video to a measurable 3D model
+
+The `sih3d` pipeline for SIH26158 (NTRO): one command turns a drone video plus its telemetry into
+a georeferenced, textured, AI-classified 3D model with per-point confidence, an accuracy report and a
+browser viewer.
+
+This folder holds **code only**. Datasets (about 62 GB in the original working copy) and model
+weights are not in git — [DATA.md](DATA.md) explains how to fetch exactly the parts the pipeline uses.
+The full pipeline description, measured results and honest limits are in
+[sih3d/README.md](sih3d/README.md).
+
+It is independent of the `core/` reconstruction package at the root of this repository: separate
+code, separate dependencies, separate virtual environment.
+
+## Layout
+
+```
+sih3d_pipeline/
+├── sih3d/               the pipeline package  (python -m sih3d ...)
+├── scripts/             dataset preparation, OpenDroneMap runner, accuracy scripts
+├── viewer/index.html    browser viewer (points / textured mesh, click-to-measure)
+├── download_data.py     fetches datasets and model weights into data/ and models/
+├── requirements.txt
+├── DATA.md              what data exists, where it comes from, licences, how to get it
+└── README.md
+```
+
+Created locally and ignored by git (see `.gitignore`):
+
+```
+data/            datasets, prepared keyframes, OpenDroneMap projects, run reports
+models/          yolo11n-seg.pt and the Hugging Face cache (models/hf)
+viewer/data/     point buffers exported for the viewer
+viewer/models.json
+.venv/
+```
+
+## Setup
+
+Run everything **from inside this folder**. The code resolves `data/`, `models/` and
+`viewer/` relative to the working directory, and `sih3d/__main__.py` imports
+`scripts.prepare_dataset`, so `sih3d/` and `scripts/` must be importable from where you run.
+
+```bash
+cd sih3d_pipeline
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# OpenDroneMap does the reconstruction, in Docker
+open -a Docker            # macOS; any running Docker daemon works
+docker pull opendronemap/odm
+
+# model weights (otherwise they download on first run) and a dataset
+.venv/bin/python download_data.py models aukerman osm
+```
+
+`ffmpeg` is also needed, but only by `scripts/images_to_video.py`.
+
+## Run
+
+```bash
+# Any DJI video with its .SRT (turn on "video captions" on the drone)
+.venv/bin/python -m sih3d run --video DJI_0001.MP4 --telemetry DJI_0001.SRT --focal35 24 --name flight1
+
+# Near-real-time preview first, then full quality
+.venv/bin/python -m sih3d run ... --mode preview
+.venv/bin/python -m sih3d run ... --mode full
+
+# View results: serve this folder, then open http://127.0.0.1:8765/viewer/
+python3 -m http.server 8765 --bind 127.0.0.1
+```
+
+Outputs go to `data/runs/<name>/report.json` and `data/odm_projects/<name>/` (textured mesh, point
+clouds, orthophoto, DSM). [DATA.md](DATA.md) has the commands for each benchmark dataset.
+
+## Tested with
+
+| Component | Version |
+|---|---|
+| Python | 3.14.7 |
+| OpenDroneMap (Docker `opendronemap/odm`) | 3.6.2 |
+| torch / torchvision | 2.14.0 / 0.29.0 |
+| transformers | 5.17.0 |
+| ultralytics | 8.4.150 |
+| timm | 1.0.29 |
+| numpy | 2.5.3 |
+| opencv-python | 5.0.0.93 |
+| laspy / lazrs | 2.7.0 / 0.8.2 |
+| pyproj | 3.8.0 |
+| scipy | 1.18.1 |
+| pillow | 12.3.0 |
+| piexif | 1.1.3 |
+
+`requirements.txt` is unpinned, as in the original project. If a newer release breaks something,
+pin to the versions above.
+
+The `models` weights have their own licences — notably **YOLO11 is AGPL-3.0** — and several datasets
+are non-commercial. Check [DATA.md](DATA.md) before any use beyond research.

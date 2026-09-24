@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drone 3D Model Viewer</title>
+<style>
+  :root { --ink: #e8ecef; --muted: #9aa5ad; --panel: rgba(16, 20, 24, 0.84); --accent: #ffb020; }
+  html, body { margin: 0; height: 100%; background: #0d1114; color: var(--ink);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  .panel { position: fixed; background: var(--panel); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px; padding: 12px 14px; backdrop-filter: blur(6px); }
+  #info { top: 16px; left: 16px; max-width: 360px; }
+  #info h1 { font-size: 15px; margin: 0 0 4px; }
+  #info p { margin: 0; color: var(--muted); font-size: 12.5px; }
+  .row { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .row a, .row button { color: var(--ink); text-decoration: none; padding: 4px 10px; border-radius: 5px;
+    border: 1px solid rgba(255,255,255,0.18); font: inherit; font-size: 12.5px; background: transparent; cursor: pointer; }
+  .row [aria-current="true"], .row [aria-pressed="true"] { background: var(--accent); color: #111; border-color: var(--accent); }
+  #legend { top: 16px; right: 16px; font-size: 12.5px; }
+  #legend div { display: flex; align-items: center; gap: 8px; }
+  #legend i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  #measure { bottom: 16px; left: 16px; font-variant-numeric: tabular-nums; }
+  #measure b { color: var(--accent); font-size: 18px; }
+  #help { bottom: 16px; right: 16px; color: var(--muted); font-size: 12.5px; }
+  #help kbd { background: rgba(255,255,255,0.1); border-radius: 3px; padding: 0 5px; color: var(--ink); }
+  #loading { top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; min-width: 260px; }
+  #bar { height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+  #bar div { height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+  #clear { font: inherit; color: var(--ink); background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 5px; padding: 3px 10px; cursor: pointer; margin-left: 8px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div id="info" class="panel">
+  <h1 id="title">Loading…</h1>
+  <p id="stats"></p>
+  <nav id="models" class="row" aria-label="Models"></nav>
+  <div id="views" class="row" aria-label="Display"></div>
+</div>
+<div id="legend" class="panel" hidden></div>
+<div id="measure" class="panel">Distance: <b id="dist">—</b><button id="clear" type="button">Clear</button>
+  <div style="color: var(--muted); font-size: 12px; margin-top: 4px;">Shift-click two points to measure</div>
+</div>
+<div id="help" class="panel"><kbd>drag</kbd> rotate · <kbd>right-drag</kbd> pan · <kbd>scroll</kbd> zoom · <kbd>shift</kbd>+click measure</div>
+<div id="loading" class="panel"><div id="loadtext">Loading…</div><div id="bar"><div></div></div></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+
+const BUILT_IN = [
+  { key: 'semcity', title: 'SemCity — TU Munich campus', note: '170 RTK photos · scale error 0.0% ± 0.25% vs LoD2',
+    mesh: '../data/odm_projects/semcity/odm_texturing/', points: null },
+  { key: 'aukerman', title: 'Aukerman park, Ohio', note: '75 drone photos · 2.7 cm/px',
+    mesh: '../data/odm_projects/aukerman/odm_texturing/', points: null },
+];
+let models = BUILT_IN;
+try { const r = await fetch('models.json'); if (r.ok) models = [...(await r.json()), ...BUILT_IN]; } catch {}
+
+const q = new URLSearchParams(location.search);
+const model = models.find(m => m.key === q.get('model')) || models[0];
+const modes = [model.mesh && 'mesh', model.points && 'photo', model.points && 'class', model.points && 'confidence'].filter(Boolean);
+const mode = modes.includes(q.get('view')) ? q.get('view') : modes[0];
+const label = { mesh: 'Textured mesh', photo: 'Points · photo', class: 'Points · AI classes', confidence: 'Points · confidence' };
+
+document.getElementById('title').textContent = model.title;
+document.getElementById('stats').textContent = model.note || '';
+const link = (params, text, current) => { const a = document.createElement('a'); a.href = '?' + new URLSearchParams(params);
+  a.textContent = text; a.setAttribute('aria-current', String(current)); return a; };
+for (const m of models) document.getElementById('models').append(link({ model: m.key }, m.title.split(' — ')[0], m === model));
+for (const v of modes) document.getElementById('views').append(link({ model: model.key, view: v }, label[v], v === mode));
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d1114);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 100000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.screenSpacePanning = true;
+
+const bar = document.querySelector('#bar div'), loadText = document.getElementById('loadtext');
+const progress = (text, frac) => { loadText.textContent = text; bar.style.width = `${(100 * frac).toFixed(0)}%`; };
+let object, pickSize = 0.01;
+
+if (mode === 'mesh') {
+  const manager = new THREE.LoadingManager();
+  manager.onProgress = (u, d, t) => progress(`Loading textures ${d} / ${t}`, d / t);
+  const mats = await new MTLLoader(manager).setPath(model.mesh).loadAsync('odm_textured_model_geo.mtl');
+  mats.preload();
+  object = await new OBJLoader(manager).setMaterials(mats).setPath(model.mesh).loadAsync('odm_textured_model_geo.obj',
+    e => e.total && progress(`Loading mesh ${(e.loaded / 1048576).toFixed(0)} / ${(e.total / 1048576).toFixed(0)} MB`, e.loaded / e.total));
+  object.traverse(o => { if (!o.isMesh) return;
+    const swap = m => { const b = new THREE.MeshBasicMaterial({ map: m.map, side: THREE.DoubleSide }); if (b.map) b.map.colorSpace = THREE.SRGBColorSpace; return b; };
+    o.material = Array.isArray(o.material) ? o.material.map(swap) : swap(o.material); });
+} else {
+  const base = model.points;
+  const meta = await (await fetch(base + 'meta.json')).json();
+  const get = async (f, T) => { progress(`Loading ${f}`, 0.5); return new T(await (await fetch(base + f)).arrayBuffer()); };
+  const pos = await get('positions.f32', Float32Array);
+  const col = new Float32Array(meta.count * 3);
+  if (mode === 'photo') {
+    const c = await get('colors.u8', Uint8Array); for (let i = 0; i < c.length; i++) col[i] = c[i] / 255;
+  } else if (mode === 'class') {
+    const c = await get('classes.u8', Uint8Array);
+    for (let i = 0; i < meta.count; i++) { const e = meta.legend[c[i]] || meta.legend['1'];
+      col[3 * i] = e.rgb[0] / 255; col[3 * i + 1] = e.rgb[1] / 255; col[3 * i + 2] = e.rgb[2] / 255; }
+    const counts = {}; for (let i = 0; i < meta.count; i++) counts[c[i]] = (counts[c[i]] || 0) + 1;
+    const lg = document.getElementById('legend'); lg.hidden = false; lg.innerHTML = '<b>AI classes</b>';
+    for (const [code, e] of Object.entries(meta.legend)) if (counts[code]) {
+      const d = document.createElement('div'); d.innerHTML = `<i style="background:rgb(${e.rgb})"></i>${e.name} · ${(100 * counts[code] / meta.count).toFixed(1)}%`; lg.append(d); }
+  } else {
+    const v = await get('views.u8', Uint8Array);
+    const inf = meta.inferred_points ? await get('inferred.u8', Uint8Array) : new Uint8Array(meta.count);
+    for (let i = 0; i < meta.count; i++) {
+      if (inf[i]) { col[3 * i] = 0.25; col[3 * i + 1] = 0.55; col[3 * i + 2] = 1.0; continue; }  // AI-estimated: blue
+      const t = Math.min(v[i], 6) / 6;  // measured: 0-1 cameras red -> 6+ cameras green
+      col[3 * i] = 1 - t; col[3 * i + 1] = 0.25 + 0.75 * t; col[3 * i + 2] = 0.2; }
+    const lg = document.getElementById('legend'); lg.hidden = false;
+    lg.innerHTML = '<b>Confidence</b><div><i style="background:rgb(255,64,51)"></i>measured, 0–1 cameras</div><div><i style="background:rgb(128,160,51)"></i>measured, 3 cameras</div><div><i style="background:rgb(0,255,51)"></i>measured, 6+ cameras</div>'
+      + `<div><i style="background:rgb(64,140,255)"></i>AI-estimated (${(meta.inferred_points || 0).toLocaleString()})</div>`;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  object = new THREE.Points(g, new THREE.PointsMaterial({ size: 2, sizeAttenuation: false, vertexColors: true }));
+  document.getElementById('stats').textContent = `${model.note || ''} · ${meta.count.toLocaleString()} points`;
+}
+object.rotation.x = -Math.PI / 2;  // Z-up survey data -> Y-up viewer
+scene.add(object);
+const box = new THREE.Box3().setFromObject(object), centre = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
+object.position.sub(centre);
+const span = Math.max(size.x, size.z);
+pickSize = span * 0.002;
+camera.position.set(0, span * 0.55, span * 0.75); camera.far = span * 20; camera.updateProjectionMatrix();
+controls.maxDistance = span * 5;
+document.getElementById('loading').hidden = true;
+
+const ray = new THREE.Raycaster(); ray.params.Points.threshold = pickSize;
+const pts = [], marks = new THREE.Group(); scene.add(marks);
+const dot = new THREE.MeshBasicMaterial({ color: 0xffb020, depthTest: false });
+const lineMat = new THREE.LineBasicMaterial({ color: 0xffb020, depthTest: false });
+const dist = document.getElementById('dist');
+renderer.domElement.addEventListener('click', ev => {
+  if (!ev.shiftKey) return;
+  ray.setFromCamera(new THREE.Vector2(ev.clientX / innerWidth * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1), camera);
+  const hit = ray.intersectObject(object, true)[0]; if (!hit) return;
+  if (pts.length === 2) { pts.length = 0; marks.clear(); }
+  pts.push(hit.point.clone());
+  const s = new THREE.Mesh(new THREE.SphereGeometry(span * 0.003, 12, 8), dot); s.position.copy(hit.point); s.renderOrder = 10; marks.add(s);
+  if (pts.length === 2) { const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat); l.renderOrder = 10; marks.add(l);
+    dist.textContent = `${pts[0].distanceTo(pts[1]).toFixed(2)} m  (height diff ${Math.abs(pts[0].y - pts[1].y).toFixed(2)} m)`;
+  } else dist.textContent = 'pick second point…';
+});
+document.getElementById('clear').onclick = () => { pts.length = 0; marks.clear(); dist.textContent = '—'; };
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>

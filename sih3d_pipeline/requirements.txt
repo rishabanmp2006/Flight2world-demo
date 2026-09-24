@@ -1,0 +1,12 @@
+numpy
+opencv-python
+pillow
+piexif
+laspy[lazrs]
+pyproj
+scipy
+torch
+torchvision
+ultralytics
+transformers
+timm

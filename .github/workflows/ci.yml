@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only torch keeps the CI image small.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check core tests
+
+      - name: Run test suite
+        # COLMAP and the depth weights are not available on the runner, so
+        # tests needing them are skipped by their own guards.
+        run: pytest tests -m "not requires_colmap and not requires_model"
+
+  hygiene:
+    name: Repo hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject committed build artifacts
+        run: |
+          set -euo pipefail
+          bad=$(git ls-files | grep -E '(\.pyc$|__pycache__/|\.DS_Store$|^outputs/|\.db$)' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Generated artifacts are tracked in git:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "No generated artifacts tracked."
+
+      - name: Reject newly added large files
+        run: |
+          set -euo pipefail
+          big=$(git ls-files -z | xargs -0 -r du -k 2>/dev/null \
+                | awk '$1 > 20480 {print $1"KB\t"$2}' || true)
+          if [ -n "$big" ]; then
+            echo "::error::Files larger than 20MB are tracked:"
+            echo "$big"
+            exit 1
+          fi
+          echo "No oversized files tracked."
