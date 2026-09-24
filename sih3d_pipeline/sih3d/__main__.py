@@ -199,6 +199,16 @@ def main():
     e.add_argument("--title")
     e.add_argument("--note", default="")
     e.add_argument("--projects", default="data/odm_projects")
+    c = sub.add_parser("cleanup", help="remove reproducible ODM intermediates for a completed run (dry-run without --yes)")
+    c.add_argument("--name", required=True, help="run/project name (as passed to 'run')")
+    c.add_argument("--work", default="data/runs", help="runs root (default: data/runs)")
+    c.add_argument("--projects", default="data/odm_projects", help="projects root (default: data/odm_projects)")
+    c.add_argument("--yes", action="store_true", help="actually delete; without it, dry-run only")
+    d = sub.add_parser("disk-usage", help="show disk usage of major run/workspace directories (sorted, no deletion)")
+    d.add_argument("--name", required=True, help="run/project name (as passed to 'run')")
+    d.add_argument("--work", default="data/runs", help="runs root (default: data/runs)")
+    d.add_argument("--projects", default="data/odm_projects", help="projects root (default: data/odm_projects)")
+    d.add_argument("--viewer", default="viewer", help="viewer root (default: viewer, expects viewer/data/<name>)")
     a = ap.parse_args()
     if a.cmd == "run":
         cmd_run(a)
@@ -216,6 +226,62 @@ def main():
         mesh = project / "odm_texturing"
         log(json.dumps(export.export_points(a.name, cloud, evaluate.project_crs(project), title=a.title, note=a.note,
                                             mesh_dir=str(mesh) if (mesh / "odm_textured_model_geo.obj").exists() else None)))
+    elif a.cmd == "cleanup":
+        from sih3d.cleanup import DELETABLE_SUBDIRS, _human_size, collect_cleanup_info, is_run_successful, run_cleanup
+        import shutil as _shutil  # local alias to avoid shadowing
+
+        work_dir = Path(a.work) / a.name
+        project_dir = Path(a.projects) / a.name
+
+        # 1. Verify existence
+        if not work_dir.exists() and not project_dir.exists():
+            raise SystemExit(f"Run/project '{a.name}' not found in {a.work} nor {a.projects}")
+        if not project_dir.exists():
+            raise SystemExit(f"Project directory not found: {project_dir}")
+
+        # 2. Verify successful completion if report available
+        successful, reason = is_run_successful(work_dir, project_dir)
+        if not successful:
+            raise SystemExit(
+                f"Refusing cleanup: run '{a.name}' not marked successful ({reason}). "
+                f"Check {work_dir / 'report.json'} or ensure final outputs exist."
+            )
+
+        # 3. Print what will be deleted and sizes
+        _, total, sized = collect_cleanup_info(project_dir)
+        if not sized:
+            log(f"Nothing to clean for '{a.name}': no deletable intermediates found in {project_dir}")
+            log(f"Deletable set is: {', '.join(DELETABLE_SUBDIRS)} (already missing)")
+        else:
+            log(f"Cleanup for '{a.name}' in {project_dir}:")
+            for p, s in sized:
+                log(f"  {p}  ({_human_size(s)})")
+            log(f"Total reclaimable: {_human_size(total)} in {len(sized)} directories")
+            log(f"Protected (never deleted): video, telemetry, data/runs/<name>/frames, final LAZs, "
+                f"odm_texturing/, viewer/data/, report.json, keyframes.json, coords.txt, reconstruction.json "
+                f"(if required) – only {', '.join(DELETABLE_SUBDIRS)} are considered.")
+            if not a.yes:
+                log("Dry-run: pass --yes to actually delete.")
+            else:
+                # 7. Handle already-missing gracefully – run_cleanup does rmtree with exists check
+                result = run_cleanup(a.work, a.projects, a.name, confirm=True)
+                if result["deleted"]:
+                    log(f"Deleted {len(result['deleted'])} directories, reclaimed {_human_size(total)}")
+                else:
+                    log("Nothing deleted (directories already missing).")
+                if result.get("error"):
+                    log(f"Warning: {result['error']}")
+    elif a.cmd in ("disk-usage", "disk_usage"):
+        from sih3d.disk_usage import collect_disk_usage, format_report
+        work_dir = Path(a.work) / a.name
+        project_dir = Path(a.projects) / a.name
+        viewer_path = Path(a.viewer) / "data" / a.name
+        # Gracefully handle missing – still report what exists
+        if not work_dir.exists() and not project_dir.exists() and not viewer_path.exists():
+            log(f"Run '{a.name}' not found in {a.work} nor {a.projects} nor {viewer_path} (all missing, handled gracefully)")
+        items, total = collect_disk_usage(a.work, a.projects, a.viewer, a.name)
+        for line in format_report(a.name, items, total):
+            log(line)
 
 
 if __name__ == "__main__":
