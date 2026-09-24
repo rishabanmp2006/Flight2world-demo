@@ -2,10 +2,12 @@
 
 Uses temporary directories only – never touches real data/runs or
 data/odm_projects. Verifies size calculation, sorting, missing handling,
-and that no files are modified/deleted.
+no double-counting of the ODM georeferencing model, hardlink (inode)
+deduplication in the unique total, and that no files are modified/deleted.
 """
 
-import json
+import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -39,6 +41,7 @@ from sih3d.disk_usage import _dir_size, _human_size, collect_disk_usage, format_
 def _write_bytes(path: Path, size: int):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"x" * size)
+    return path
 
 
 class TestDiskUsageHelpers(unittest.TestCase):
@@ -97,7 +100,7 @@ class TestCollectDiskUsage(unittest.TestCase):
             # viewer
             _write_bytes(viewer / "data" / name / "positions.f32", 2500)
 
-            items, total = collect_disk_usage(work, projects, viewer, name)
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, name)
             # Check all expected labels present
             labels = [lbl for lbl, _, _ in items]
             for expected in ["data/runs/runA/frames", "data/odm_projects/runA/opensfm", "viewer/data/runA"]:
@@ -109,10 +112,12 @@ class TestCollectDiskUsage(unittest.TestCase):
             sizes_sorted = [sz for _, _, sz in items]
             self.assertEqual(sizes_sorted, sorted(sizes_sorted, reverse=True))
 
-            # Total should be sum of all listed sizes (including LAZ files)
+            # Logical total is the sum of all listed sizes (including LAZ files)
             # Note: odm_georeferencing dir size includes only its own file (6000), not LAZ at root
             expected_total = sum(sizes.values()) + 9000 + 7000 + 2500
-            self.assertEqual(total, expected_total)
+            self.assertEqual(logical, expected_total)
+            # No hardlinks in this fixture, so unique total equals logical total
+            self.assertEqual(unique, expected_total)
 
             # Ensure final LAZ files are listed
             laz_labels = [lbl for lbl, _, _ in items if "laz" in lbl.lower()]
@@ -129,10 +134,11 @@ class TestCollectDiskUsage(unittest.TestCase):
             # Only create a subset
             _write_bytes(work / name / "frames" / "a.jpg", 1234)
             _write_bytes(projects / name / "odm_georeferencing" / "f.bin", 4321)
-            items, total = collect_disk_usage(work, projects, viewer, name)
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, name)
             # Should return 2 items, not raise
             self.assertEqual(len(items), 2)
-            self.assertEqual(total, 1234 + 4321)
+            self.assertEqual(logical, 1234 + 4321)
+            self.assertEqual(unique, 1234 + 4321)
             # Sorted descending
             self.assertGreaterEqual(items[0][2], items[1][2])
 
@@ -147,10 +153,13 @@ class TestCollectDiskUsage(unittest.TestCase):
             viewer.mkdir()
             items, total = collect_disk_usage(work, projects, viewer, "nonexistent")
             self.assertEqual(items, [])
-            self.assertEqual(total, 0)
+            logical, unique = total
+            self.assertEqual(logical, 0)
+            self.assertEqual(unique, 0)
             lines = format_report("nonexistent", items, total)
             self.assertTrue(any("No data found" in l for l in lines))
-            self.assertTrue(any("Total:" in l for l in lines))
+            self.assertTrue(any("Logical total:" in l for l in lines))
+            self.assertTrue(any("Unique total:" in l for l in lines))
 
     def test_does_not_modify_files(self):
         with tempfile.TemporaryDirectory() as td:
@@ -183,9 +192,117 @@ class TestCollectDiskUsage(unittest.TestCase):
             viewer_alt = td / "viewer" / "data"
             name = "runB"
             _write_bytes(viewer_alt / name / "positions.f32", 777)
-            items, total = collect_disk_usage(work, projects, viewer_alt, name)
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer_alt, name)
             self.assertTrue(any("runB" in lbl for lbl, _, _ in items))
-            self.assertEqual(total, 777)
+            self.assertEqual(logical, 777)
+            self.assertEqual(unique, 777)
+
+
+class TestNoDoubleCounting(unittest.TestCase):
+    """The ODM georeferencing model must be counted exactly once, through
+    the recursive odm_georeferencing/ directory target only."""
+
+    def test_odm_georeferenced_model_laz_counted_once_via_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, projects, viewer = td / "runs", td / "projects", td / "viewer"
+            name = "geoLaz"
+            _write_bytes(projects / name / "odm_georeferencing" / "odm_georeferenced_model.laz", 8000)
+            _write_bytes(projects / name / "odm_georeferencing" / "odm_metadata.csv", 500)
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, name)
+            labels = [lbl for lbl, _, _ in items]
+            # No standalone row for the LAZ file...
+            self.assertNotIn(f"data/odm_projects/{name}/odm_georeferencing/odm_georeferenced_model.laz", labels)
+            # ...its bytes are fully contained in the directory row
+            dir_rows = [sz for lbl, _, sz in items if lbl == f"data/odm_projects/{name}/odm_georeferencing"]
+            self.assertEqual(dir_rows, [8000 + 500])
+            self.assertEqual(logical, 8000 + 500)
+            self.assertEqual(unique, 8000 + 500)
+
+
+class TestHardlinkDedup(unittest.TestCase):
+    """The unique total must count each (st_dev, st_ino) exactly once."""
+
+    def test_hardlinked_file_in_two_counted_targets(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, projects, viewer = td / "runs", td / "projects", td / "viewer"
+            name = "hardlinked"
+            src = _write_bytes(work / name / "frames" / "k1.jpg", 3000)
+            (projects / name / "images").mkdir(parents=True)
+            os.link(src, projects / name / "images" / "k1.jpg")
+            _write_bytes(projects / name / "opensfm" / "x.txt", 100)
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, name)
+            rows = {lbl: sz for lbl, _, sz in items}
+            # Both rows remain visible at their full logical size...
+            self.assertEqual(rows[f"data/runs/{name}/frames"], 3000)
+            self.assertEqual(rows[f"data/odm_projects/{name}/images"], 3000)
+            # ...the logical total counts the shared bytes once per row...
+            self.assertEqual(logical, 3000 + 3000 + 100)
+            # ...but the unique total counts the inode only once.
+            self.assertEqual(unique, 3000 + 100)
+
+    def test_copies_with_different_inodes_counted_separately(self):
+        # _hardlink_or_copy() falls back to shutil.copy2(): identical
+        # content, different inodes -> both must count in the unique total.
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, projects, viewer = td / "runs", td / "projects", td / "viewer"
+            name = "copied"
+            src = _write_bytes(work / name / "frames" / "k1.jpg", 1500)
+            (projects / name / "images").mkdir(parents=True)
+            shutil.copy2(src, projects / name / "images" / "k1.jpg")
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, name)
+            self.assertEqual(logical, 1500 + 1500)
+            self.assertEqual(unique, 1500 + 1500)
+
+    def test_hardlinked_classified_filled_pair(self):
+        # fill_gaps() no-op path hardlinks sih3d_classified.laz to
+        # sih3d_filled.laz (holes.py); both rows must remain visible.
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, projects, viewer = td / "runs", td / "projects", td / "viewer"
+            name = "fillnoop"
+            src = _write_bytes(projects / name / "sih3d_classified.laz", 4000)
+            os.link(src, projects / name / "sih3d_filled.laz")
+            _write_bytes(projects / name / "sih3d_final.laz", 2500)
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, name)
+            rows = {lbl: sz for lbl, _, sz in items}
+            # Both rows remain visible at their full logical size...
+            self.assertEqual(rows[f"data/odm_projects/{name}/sih3d_classified.laz"], 4000)
+            self.assertEqual(rows[f"data/odm_projects/{name}/sih3d_filled.laz"], 4000)
+            self.assertEqual(logical, 4000 + 4000 + 2500)
+            # ...the shared inode contributes only once to the unique total.
+            self.assertEqual(unique, 4000 + 2500)
+
+    def test_logical_total_is_sum_of_displayed_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, projects, viewer = td / "runs", td / "projects", td / "viewer"
+            name = "sumcheck"
+            src = _write_bytes(work / name / "frames" / "a.jpg", 2000)
+            (projects / name / "images").mkdir(parents=True)
+            os.link(src, projects / name / "images" / "a.jpg")
+            _write_bytes(viewer / "data" / name / "p.f32", 700)
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, name)
+            # Logical total stays the plain sum of the displayed rows...
+            self.assertEqual(logical, sum(sz for _, _, sz in items))
+            # ...while the unique total is smaller because of the hardlink.
+            self.assertLess(unique, logical)
+            self.assertEqual(unique, 2000 + 700)
+
+    def test_report_lists_logical_and_unique_totals(self):
+        items = [
+            ("data/runs/x/frames", Path("/nonexistent/frames"), 3000),
+            ("data/odm_projects/x/images", Path("/nonexistent/images"), 3000),
+            ("data/odm_projects/x/opensfm", Path("/nonexistent/opensfm"), 100),
+        ]
+        lines = format_report("x", items, (6100, 3100))
+        self.assertTrue(any("Logical total: 6.0 KB (6100 bytes) in 3 entries" in l for l in lines))
+        self.assertTrue(any("Unique total:" in l and "3100 bytes" in l and "inode" in l for l in lines))
+        # Hardlinked rows are not hidden from the report
+        self.assertTrue(any("frames" in l for l in lines))
+        self.assertTrue(any("images" in l for l in lines))
 
 
 class TestDiskUsageCLI(unittest.TestCase):
@@ -210,7 +327,8 @@ class TestDiskUsageCLI(unittest.TestCase):
             # log goes to stderr
             out = result.stderr + result.stdout
             self.assertIn("Disk usage for run 'cli_test'", out)
-            self.assertIn("Total:", out)
+            self.assertIn("Logical total:", out)
+            self.assertIn("Unique total:", out)
             # Should be sorted: opensfm (4096) before frames (2048) before viewer (1024)
             # Check order by finding indices
             idx_opensfm = out.find("opensfm")
@@ -237,7 +355,8 @@ class TestDiskUsageCLI(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             out = result.stderr + result.stdout
             self.assertIn("No data found", out)
-            self.assertIn("Total:", out)
+            self.assertIn("Logical total:", out)
+            self.assertIn("Unique total:", out)
 
     def test_cli_does_not_delete(self):
         import subprocess
