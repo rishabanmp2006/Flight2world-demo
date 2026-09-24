@@ -212,6 +212,8 @@ def apply_gps_table(items, path, match):
 
 def interpolate_gps(rows, times, offset):
     """GPS (lat, lon, alt) at each time; NaN outside the telemetry range."""
+    if not len(rows):
+        return np.full((len(times), 3), np.nan)
     tt = np.array([r[0] for r in rows]) + offset
     order = np.argsort(tt)
     tt, vals = tt[order], np.array([r[1:] for r in rows], float)[order]
@@ -480,6 +482,8 @@ def analyse_video(path, crop, sample_fps, cut_ratio):
 
 def split_segments(cands, cuts):
     """Candidate index ranges for each continuous shot between hard cuts."""
+    if not cands:
+        return []
     segs, start, pending = [], 0, sorted(cuts)
     for i, c in enumerate(cands):
         crossed = False
@@ -498,6 +502,8 @@ def select_keyframes(cands, seg, gps, min_shift, min_move, max_gap, blur_ratio):
     and keep the sharpest frame per bin, so spacing follows overlap instead of time. A bin also closes
     after max_gap seconds, so slow orbits and rotations still get enough views."""
     sub = list(range(*seg))
+    if not sub:
+        return [], [], 0
     med = float(np.median([cands[i]["sharpness"] for i in sub]))
     motion = [0.0]
     for prev, cur in zip(sub, sub[1:]):

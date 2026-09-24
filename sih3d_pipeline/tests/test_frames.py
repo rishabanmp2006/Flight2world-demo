@@ -105,11 +105,9 @@ class TestSplitSegments(unittest.TestCase):
         self.assertEqual(split_segments(cands, [5, 15]), [(0, 1), (1, 2), (2, 3)])
 
     def test_empty_candidates_returns_empty_segment(self):
-        # Current implementation returns [(0,0)] for empty cands.
-        # This is arguably a bug (expected []), but we assert current behavior
-        # and flag it in the final report without fixing.
-        self.assertEqual(split_segments([], []), [(0, 0)])
-        self.assertEqual(split_segments([], [5]), [(0, 0)])
+        # Empty candidates should yield no segments.
+        self.assertEqual(split_segments([], []), [])
+        self.assertEqual(split_segments([], [5]), [])
 
     def test_single_candidate_no_cut(self):
         self.assertEqual(split_segments([{"frame": 0}], []), [(0, 1)])
@@ -243,12 +241,21 @@ class TestSelectKeyframes(unittest.TestCase):
         # So both steps use shift => motion ~0.5 each => bins [0,0,1] => kept [0,2] expected
         self.assertEqual(kept, [0, 2])
 
-    def test_empty_segment_raises_index_error(self):
-        # Current implementation crashes on empty segment; we assert this behavior without fixing.
+    def test_empty_segment_returns_empty(self):
+        # Empty segment should return empty result gracefully.
         cands = [{"frame": 0, "t": 0.0, "sharpness": 100.0, "shift": 0.05}]
         gps = np.full((1, 3), np.nan)
-        with self.assertRaises(IndexError):
-            select_keyframes(cands, (0, 0), gps, 0.1, None, 2.0, 0.35)
+        kept, blurry, gaps = select_keyframes(cands, (0, 0), gps, 0.1, None, 2.0, 0.35)
+        self.assertEqual(kept, [])
+        self.assertEqual(blurry, [])
+        self.assertEqual(gaps, 0)
+
+    def test_empty_cands_and_empty_segment(self):
+        # Both cands and segment empty should also be handled gracefully.
+        kept, blurry, gaps = select_keyframes([], (0, 0), np.zeros((0, 3)), 0.1, None, 2.0, 0.35)
+        self.assertEqual(kept, [])
+        self.assertEqual(blurry, [])
+        self.assertEqual(gaps, 0)
 
     def test_min_shift_zero_raises(self):
         cands = [
@@ -408,10 +415,14 @@ class TestInterpolateGps(unittest.TestCase):
         out = interpolate_gps(rows, times, 0.0)
         self.assertEqual(out.shape, (0, 3))
 
-    def test_empty_rows_raises_index_error(self):
-        # Current implementation crashes on empty rows; assert this behavior
-        with self.assertRaises(IndexError):
-            interpolate_gps([], np.array([0.0]), 0.0)
+    def test_empty_rows_returns_nan(self):
+        # Empty telemetry rows should return all-NaN without raising.
+        out = interpolate_gps([], np.array([0.0, 1.0]), 0.0)
+        self.assertEqual(out.shape, (2, 3))
+        self.assertTrue(np.all(np.isnan(out)))
+        # also with empty times
+        out2 = interpolate_gps([], np.array([]), 0.0)
+        self.assertEqual(out2.shape, (0, 3))
 
     def test_deterministic(self):
         rows = [(0.0, 48.0, 11.0, 500), (2.0, 48.0002, 11.0, 500)]
