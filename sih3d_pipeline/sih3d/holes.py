@@ -17,6 +17,8 @@ import cv2
 import laspy
 import numpy as np
 
+from sih3d.odm import _hardlink_or_copy
+
 MODEL = "depth-anything/Depth-Anything-V2-Small-hf"
 
 
@@ -127,7 +129,8 @@ def fill_gaps(project, frames_dir, labels_dir, out_path, cloud_path=None, device
     stats = {"model": MODEL, "frames_used": used, "median_depth_fit_error": round(float(np.median(fit_errors)), 3)
              if fit_errors else None}
     if not add_xyz:
-        las.write(out_path)
+        # No new points: link the input instead of rewriting/re-encoding an identical LAZ.
+        _hardlink_or_copy(cloud_path, Path(out_path))
         return {**stats, "inferred_points_added": 0, "output": str(out_path)}
 
     add = np.vstack(add_xyz)
