@@ -1,10 +1,14 @@
 """Tests for explicit cleanup command (sih3d cleanup).
 
 Uses temporary directories only – never touches real data/runs or
-data/odm_projects.  Verifies audit-identified intermediates only.
+data/odm_projects.  Verifies audit-identified intermediates only, plus the
+superseded AI clouds (sih3d_classified.laz / sih3d_filled.laz), which are
+deletable only when the run is successful AND levelling produced
+sih3d_final.laz.
 """
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -18,7 +22,8 @@ for p in (str(REPO_ROOT), str(PIPE)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from sih3d.cleanup import DELETABLE_SUBDIRS, get_deletable_paths, is_run_successful, run_cleanup, _dir_size
+from sih3d.cleanup import (DELETABLE_SUBDIRS, SUPERSEDED_LAZS, collect_cleanup_info,
+                           get_deletable_paths, is_run_successful, run_cleanup, _dir_size)
 
 
 def _make_successful_run(work_root: Path, projects_root: Path, name: str = "testrun"):
@@ -227,6 +232,167 @@ class TestCleanupSize(unittest.TestCase):
             self.assertEqual(res["total_bytes"], 4096)
             self.assertEqual(len(res["sized"]), 1)
             self.assertEqual(res["sized"][0][1], 4096)
+
+
+def _make_leveled_run(work_root: Path, projects_root: Path, name: str = "leveled"):
+    """Successful run fixture with the full LAZ chain: classified, filled and
+    sih3d_final.laz (i.e. levelling was applied)."""
+    work, proj = _make_successful_run(work_root, projects_root, name)
+    (proj / "sih3d_classified.laz").write_bytes(b"classified-cloud")
+    (proj / "sih3d_filled.laz").write_bytes(b"filled-cloud")
+    (proj / "sih3d_final.laz").write_bytes(b"final-cloud")
+    return work, proj
+
+
+def _make_dirs(proj: Path):
+    for sub in DELETABLE_SUBDIRS:
+        p = proj / sub
+        p.mkdir(parents=True, exist_ok=True)
+        (p / "a.txt").write_text("hello")
+
+
+class TestSupersededLazCleanup(unittest.TestCase):
+    """sih3d_classified.laz / sih3d_filled.laz become deletable only when BOTH
+    gates hold: is_run_successful() and sih3d_final.laz exists."""
+
+    def test_superseded_constant(self):
+        self.assertEqual(SUPERSEDED_LAZS, ["sih3d_classified.laz", "sih3d_filled.laz"])
+
+    # -- 1a. successful run + final exists: reported as deletable -------------
+
+    def test_eligible_when_successful_and_final_exists(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_leveled_run(td / "runs", td / "projects", "ok1")
+            names = {p.name for p in get_deletable_paths(proj)}
+            self.assertIn("sih3d_classified.laz", names)
+            self.assertIn("sih3d_filled.laz", names)
+            listed, total, sized = collect_cleanup_info(proj)
+            listed_names = {p.name for p in listed}
+            self.assertIn("sih3d_classified.laz", listed_names)
+            self.assertIn("sih3d_filled.laz", listed_names)
+            # real file sizes are reported, not 0
+            by_name = {p.name: s for p, s in sized}
+            self.assertEqual(by_name["sih3d_classified.laz"], len(b"classified-cloud"))
+            self.assertEqual(by_name["sih3d_filled.laz"], len(b"filled-cloud"))
+            self.assertGreater(total, 0)
+
+    # -- 1b/7. dry-run lists them but deletes nothing -------------------------
+
+    def test_dry_run_lists_but_deletes_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_leveled_run(td / "runs", td / "projects", "ok2")
+            _make_dirs(proj)
+            res = run_cleanup(work, td / "projects", "ok2", confirm=False)
+            self.assertTrue(res["dry_run"])
+            deletable_names = {Path(p).name for p in res["deletable"]}
+            self.assertIn("sih3d_classified.laz", deletable_names)
+            self.assertIn("sih3d_filled.laz", deletable_names)
+            self.assertEqual(len(res["deletable"]), len(DELETABLE_SUBDIRS) + 2)
+            # nothing deleted
+            self.assertTrue((proj / "sih3d_classified.laz").exists())
+            self.assertTrue((proj / "sih3d_filled.laz").exists())
+            self.assertTrue((proj / "sih3d_final.laz").exists())
+            for sub in DELETABLE_SUBDIRS:
+                self.assertTrue((proj / sub).exists())
+
+    # -- 1c. --yes deletes exactly the two intermediates ----------------------
+
+    def test_confirm_deletes_both_and_protects_deliverables(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_leveled_run(td / "runs", td / "projects", "ok3")
+            _make_dirs(proj)
+            (proj / "odm_texturing").mkdir(parents=True, exist_ok=True)
+            (proj / "odm_texturing" / "odm_textured_model_geo.obj").write_text("mesh")
+            res = run_cleanup(work, td / "projects", "ok3", confirm=True)
+            self.assertFalse(res["dry_run"])
+            deleted_names = {Path(p).name for p in res["deleted"]}
+            self.assertIn("sih3d_classified.laz", deleted_names)
+            self.assertIn("sih3d_filled.laz", deleted_names)
+            # existing dir targets deleted exactly as before
+            for sub in DELETABLE_SUBDIRS:
+                self.assertIn(sub, deleted_names)
+                self.assertFalse((proj / sub).exists())
+            # the two intermediates are gone
+            self.assertFalse((proj / "sih3d_classified.laz").exists())
+            self.assertFalse((proj / "sih3d_filled.laz").exists())
+            # deliverables and protected outputs survive
+            self.assertTrue((proj / "sih3d_final.laz").exists())
+            self.assertTrue((proj / "odm_georeferencing" / "odm_georeferenced_model.laz").exists())
+            self.assertTrue((proj / "odm_georeferencing" / "coords.txt").exists())
+            self.assertTrue((proj / "odm_texturing" / "odm_textured_model_geo.obj").exists())
+            self.assertTrue((work / "report.json").exists())
+
+    # -- 2. successful run but final.laz missing (levelling not applied) ------
+
+    def test_not_eligible_when_final_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_successful_run(td / "runs", td / "projects", "nolevel")
+            # levelling did not run/apply: no sih3d_final.laz -> filled (or
+            # classified) is the delivered cloud and must be kept
+            (proj / "sih3d_classified.laz").write_bytes(b"classified-cloud")
+            (proj / "sih3d_filled.laz").write_bytes(b"filled-cloud")
+            self.assertFalse((proj / "sih3d_final.laz").exists())
+            names = {p.name for p in get_deletable_paths(proj)}
+            self.assertNotIn("sih3d_classified.laz", names)
+            self.assertNotIn("sih3d_filled.laz", names)
+            res = run_cleanup(td / "runs", td / "projects", "nolevel", confirm=True)
+            deleted_names = {Path(p).name for p in res["deleted"]}
+            self.assertNotIn("sih3d_classified.laz", deleted_names)
+            self.assertNotIn("sih3d_filled.laz", deleted_names)
+            self.assertTrue((proj / "sih3d_classified.laz").exists())
+            self.assertTrue((proj / "sih3d_filled.laz").exists())
+
+    # -- 3. final.laz exists but run unsuccessful ------------------------------
+
+    def test_not_eligible_when_run_unsuccessful(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_leveled_run(td / "runs", td / "projects", "bad1")
+            # corrupt report -> is_run_successful False even though sih3d_final.laz exists
+            # (every real LAZ is a success marker, so an unreadable report is the
+            # deterministic way to make the run unsuccessful here)
+            (work / "report.json").write_text("{not valid json")
+            ok, reason = is_run_successful(work, proj)
+            self.assertFalse(ok)
+            with self.assertRaises(SystemExit) as cm:
+                run_cleanup(td / "runs", td / "projects", "bad1", confirm=True)
+            self.assertIn("not marked successful", str(cm.exception))
+            # neither file touched
+            self.assertTrue((proj / "sih3d_classified.laz").exists())
+            self.assertTrue((proj / "sih3d_filled.laz").exists())
+            self.assertTrue((proj / "sih3d_final.laz").exists())
+
+    # -- 6. hardlinked intermediates (no-op gap filling) -----------------------
+
+    def test_hardlinked_intermediates_removed_without_touching_odm_laz(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_leveled_run(td / "runs", td / "projects", "link1")
+            # no-op fill_gaps hardlinks filled onto classified: same inode
+            (proj / "sih3d_classified.laz").unlink()
+            (proj / "sih3d_filled.laz").unlink()
+            payload = b"same-inode-cloud"
+            (proj / "sih3d_classified.laz").write_bytes(payload)
+            os.link(proj / "sih3d_classified.laz", proj / "sih3d_filled.laz")
+            s_c, s_f = os.stat(proj / "sih3d_classified.laz"), os.stat(proj / "sih3d_filled.laz")
+            self.assertEqual((s_c.st_dev, s_c.st_ino), (s_f.st_dev, s_f.st_ino))
+            odm_laz = proj / "odm_georeferencing" / "odm_georeferenced_model.laz"
+            odm_laz.write_bytes(b"odm-original-cloud-bytes")
+            res = run_cleanup(td / "runs", td / "projects", "link1", confirm=True)
+            deleted_names = {Path(p).name for p in res["deleted"]}
+            self.assertIn("sih3d_classified.laz", deleted_names)
+            self.assertIn("sih3d_filled.laz", deleted_names)
+            # both output paths removed (inode freed)...
+            self.assertFalse((proj / "sih3d_classified.laz").exists())
+            self.assertFalse((proj / "sih3d_filled.laz").exists())
+            # ...and the ODM LAZ is untouched
+            self.assertTrue(odm_laz.exists())
+            self.assertEqual(odm_laz.read_bytes(), b"odm-original-cloud-bytes")
+            self.assertTrue((proj / "sih3d_final.laz").exists())
 
 
 if __name__ == "__main__":
