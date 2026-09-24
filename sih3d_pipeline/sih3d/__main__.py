@@ -204,6 +204,11 @@ def main():
     c.add_argument("--work", default="data/runs", help="runs root (default: data/runs)")
     c.add_argument("--projects", default="data/odm_projects", help="projects root (default: data/odm_projects)")
     c.add_argument("--yes", action="store_true", help="actually delete; without it, dry-run only")
+    d = sub.add_parser("disk-usage", help="show disk usage of major run/workspace directories (sorted, no deletion)")
+    d.add_argument("--name", required=True, help="run/project name (as passed to 'run')")
+    d.add_argument("--work", default="data/runs", help="runs root (default: data/runs)")
+    d.add_argument("--projects", default="data/odm_projects", help="projects root (default: data/odm_projects)")
+    d.add_argument("--viewer", default="viewer", help="viewer root (default: viewer, expects viewer/data/<name>)")
     a = ap.parse_args()
     if a.cmd == "run":
         cmd_run(a)
@@ -266,6 +271,17 @@ def main():
                     log("Nothing deleted (directories already missing).")
                 if result.get("error"):
                     log(f"Warning: {result['error']}")
+    elif a.cmd in ("disk-usage", "disk_usage"):
+        from sih3d.disk_usage import collect_disk_usage, format_report
+        work_dir = Path(a.work) / a.name
+        project_dir = Path(a.projects) / a.name
+        viewer_path = Path(a.viewer) / "data" / a.name
+        # Gracefully handle missing – still report what exists
+        if not work_dir.exists() and not project_dir.exists() and not viewer_path.exists():
+            log(f"Run '{a.name}' not found in {a.work} nor {a.projects} nor {viewer_path} (all missing, handled gracefully)")
+        items, total = collect_disk_usage(a.work, a.projects, a.viewer, a.name)
+        for line in format_report(a.name, items, total):
+            log(line)
 
 
 if __name__ == "__main__":
