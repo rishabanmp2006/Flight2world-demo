@@ -21,6 +21,18 @@ STAGES = ["dataset", "split", "merge", "opensfm", "openmvs", "odm_filterpoints",
           "odm_georeferencing", "odm_dem", "odm_orthophoto", "odm_report", "odm_postprocess"]
 
 
+def _hardlink_or_copy(src, dst):
+    """Hard-link src to dst so keyframe/mask data is not duplicated on disk.
+
+    Falls back to a full metadata-preserving copy (shutil.copy2) where the filesystem
+    refuses links (cross-device targets, container bind-mounts, permission quirks).
+    """
+    try:
+        dst.hardlink_to(src)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
 def setup_project(projects_root, name, frames_dir, records, fused, masks_dir=None):
     """records: keyframe dicts with 'name'; fused: arrays lat, lon, alt, h_std, v_std aligned with records."""
     project = Path(projects_root) / name
@@ -29,11 +41,11 @@ def setup_project(projects_root, name, frames_dir, records, fused, masks_dir=Non
         shutil.rmtree(images)
     images.mkdir(parents=True)
     for r in records:
-        shutil.copy2(Path(frames_dir) / r["name"], images / r["name"])
+        _hardlink_or_copy(Path(frames_dir) / r["name"], images / r["name"])
         if masks_dir:
             mask = Path(masks_dir) / (Path(r["name"]).stem + "_mask.png")
             if mask.exists():
-                shutil.copy2(mask, images / mask.name)
+                _hardlink_or_copy(mask, images / mask.name)
     with open(project / "geo.txt", "w") as f:
         f.write("EPSG:4326\n")
         for i, r in enumerate(records):
