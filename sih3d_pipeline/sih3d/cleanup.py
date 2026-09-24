@@ -8,11 +8,18 @@ are ever removed:
   odm_projects/<name>/odm_filterpoints/
   odm_projects/<name>/odm_meshing/
 
+plus two superseded intermediate point clouds, and only after a *complete*
+successful run (see SUPERSEDED_LAZS below):
+
+  odm_projects/<name>/sih3d_classified.laz
+  odm_projects/<name>/sih3d_filled.laz
+
 The command is explicit (`python -m sih3d cleanup --name <run> --yes`);
 without `--yes` it is a dry-run.  It verifies the run/project exists and,
 if a `report.json` is present, that it is marked successful.  Missing
 deletable directories are tolerated.  Protected paths (video, telemetry,
-frames, final LAZs, mesh, viewer, report.json, coords.txt, reconstruction.json
+frames, the delivered clouds odm_georeferenced_model.laz and
+sih3d_final.laz, mesh, viewer, report.json, coords.txt, reconstruction.json
 outside the deletable intermediates) are never touched – we simply never
 enumerate them.
 """
@@ -32,17 +39,40 @@ DELETABLE_SUBDIRS = [
     "odm_meshing",
 ]
 
+# Superseded AI point-cloud intermediates.  Once levelling has produced
+# sih3d_final.laz, the classified/filled clouds it was built from are strictly
+# superseded inputs: nothing downstream reads them (the viewer export and the
+# accuracy numbers already consumed the final cloud during the run, and the
+# `export` command prefers sih3d_final.laz).  They are only deletable when
+# sih3d_final.laz EXISTS: level_cloud() legitimately may not write it (track
+# not a straight pass, no wall consensus, roll too large) – then classified
+# or filled is the delivered cloud and must be kept.  The run-success gate
+# (is_run_successful) is enforced by the CLI and run_cleanup before this set
+# is ever consulted.
+SUPERSEDED_LAZS = [
+    "sih3d_classified.laz",
+    "sih3d_filled.laz",
+]
+
 # Final / protected artefacts that must never be deleted – documented here for
-# auditability, but the implementation never enumerates them anyway.
+# auditability, but the implementation never enumerates them anyway.  The one
+# exception is documented on SUPERSEDED_LAZS: the two superseded AI
+# intermediates are removed once sih3d_final.laz proves levelling was applied.
 PROTECTED_NOTE = (
     "Never deleted: original video/telemetry, data/runs/<name>/frames, "
-    "final LAZs (odm_georeferenced_model.laz, sih3d_*.laz), "
-    "odm_texturing/, viewer/data/, report.json, keyframes.json, "
-    "coords.txt, reconstruction.json (if still required)."
+    "odm_georeferenced_model.laz, sih3d_final.laz, odm_texturing/, viewer/data/, "
+    "report.json, keyframes.json, coords.txt, reconstruction.json (if still required). "
+    "sih3d_classified.laz and sih3d_filled.laz are removed only for a successful run "
+    "in which levelling produced sih3d_final.laz (they are superseded inputs then)."
 )
 
 
 def _dir_size(path: Path) -> int:
+    if path.is_file():
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
     total = 0
     try:
         for p in path.rglob("*"):
@@ -106,9 +136,13 @@ def is_run_successful(work_dir: Path, project_dir: Path) -> tuple[bool, str]:
 
 
 def get_deletable_paths(project_dir: Path) -> list[Path]:
-    """Return existing deletable subdirectories inside project_dir.
+    """Return existing deletable subdirectories/files inside project_dir.
 
-    Only the four audit-approved intermediates.  Missing directories are ignored.
+    The four audit-approved intermediates, plus the superseded AI clouds
+    (SUPERSEDED_LAZS) – but the latter only when sih3d_final.laz exists, i.e.
+    levelling was applied and the intermediates are no longer the delivered
+    cloud.  The run-success gate (is_run_successful) is enforced upstream by
+    the CLI and run_cleanup.  Missing entries are ignored.
     Paths are guaranteed to be children of project_dir (no traversal).
     """
     out: list[Path] = []
@@ -131,6 +165,13 @@ def get_deletable_paths(project_dir: Path) -> list[Path]:
                 continue
         if p.exists() and p.is_dir():
             out.append(p)
+    # Superseded AI intermediates: gated on sih3d_final.laz existing.  The names
+    # are constants joined to project_dir, so no traversal check is needed.
+    if (project_dir / "sih3d_final.laz").exists():
+        for name in SUPERSEDED_LAZS:
+            p = project_dir / name
+            if p.exists() and p.is_file():
+                out.append(p)
     return out
 
 
@@ -149,6 +190,10 @@ def run_cleanup(
     confirm: bool = False,
 ) -> dict:
     """Perform (or dry-run) cleanup for a run.
+
+    Removes the audit-approved intermediate directories, plus the superseded
+    AI clouds (SUPERSEDED_LAZS) when the run is successful and levelling
+    produced sih3d_final.laz.
 
     Returns a dict with keys:
       work_dir, project_dir, deletable, total_bytes, sized, dry_run, deleted, error
@@ -201,9 +246,13 @@ def run_cleanup(
     deleted: list[str] = []
     for p in deletable:
         try:
-            if p.exists():
+            if not p.exists():
+                continue
+            if p.is_dir():
                 shutil.rmtree(p)
-                deleted.append(str(p))
+            else:
+                p.unlink()  # superseded LAZ intermediates are plain files
+            deleted.append(str(p))
         except OSError as e:
             result["error"] = str(e)
             # continue with others

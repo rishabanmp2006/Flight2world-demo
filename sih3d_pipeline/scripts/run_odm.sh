@@ -26,7 +26,7 @@ echo "Docker memory ${DOCKER_GB} GB -> ${THREADS} threads" | tee -a "$PROJECT/od
 
 docker run --rm -v "$ROOT/data/odm_projects:/datasets" opendronemap/odm \
   --project-path /datasets "$NAME" \
-  --dsm --pc-las \
+  --dsm \
   --pc-quality medium \
   --mesh-size 300000 \
   --max-concurrency "$THREADS" \
