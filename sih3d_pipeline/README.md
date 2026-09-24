@@ -73,6 +73,37 @@ python3 -m http.server 8765 --bind 127.0.0.1
 Outputs go to `data/runs/<name>/report.json` and `data/odm_projects/<name>/` (textured mesh, point
 clouds, orthophoto, DSM). [DATA.md](DATA.md) has the commands for each benchmark dataset.
 
+## Storage baseline
+
+A completed run writes `data/runs/<name>/` (keyframes, AI labels/masks, report.json),
+`data/odm_projects/<name>/` (the ODM project plus the AI point clouds) and
+`viewer/data/<name>/` (exported buffers). Measure a run — read-only, nothing is
+deleted or modified — with:
+
+```bash
+cd sih3d_pipeline
+.venv/bin/python -m sih3d disk-usage --name <run>
+# defaults: --work data/runs --projects data/odm_projects --viewer viewer
+```
+
+Each row is one target's logical size, largest first. The footer separates the
+**logical total** (sum of the rows — a hardlinked file appears in every row that
+contains a name for it, e.g. frames/masks hard-linked into
+`odm_projects/<run>/images/`) from the **unique total** (each file counted once
+by inode: unique file bytes, so hardlinked copies count once and separate copies
+count in full).
+
+What a successful run can give back — dry-run only (without `--yes` nothing is
+deleted):
+
+```bash
+.venv/bin/python -m sih3d cleanup --name <run>
+```
+
+Note: ODM also writes `odm_orthophoto/`, `odm_dem/` and `odm_report/`, which
+`disk-usage` does not list — for the full picture of a project directory use
+`du -sh data/odm_projects/<run>/*`.
+
 ## Tested with
 
 | Component | Version |

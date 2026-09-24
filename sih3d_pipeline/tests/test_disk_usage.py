@@ -305,6 +305,74 @@ class TestHardlinkDedup(unittest.TestCase):
         self.assertTrue(any("images" in l for l in lines))
 
 
+class TestCompletedRunBaseline(unittest.TestCase):
+    """Deterministic baseline for the measurement path: a miniature of the
+    layout a completed `python -m sih3d run` produces (see cmd_run in
+    sih3d/__main__.py), with the real hardlink topology (frames/masks ->
+    images, fill_gaps no-op classified -> filled).  All sizes are fixed byte
+    counts, so the logical/unique totals are exactly reproducible."""
+
+    def test_full_run_layout_logical_vs_unique(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, projects, viewer = td / "runs", td / "projects", td / "viewer"
+            name = "baseline"
+            w, pr, v = work / name, projects / name, viewer / "data" / name
+
+            # data/runs/<name>: keyframes + AI outputs (images hardlinks these)
+            f1 = _write_bytes(w / "frames" / "k1.jpg", 3000)
+            f2 = _write_bytes(w / "frames" / "k2.jpg", 2000)
+            _write_bytes(w / "labels" / "l1.png", 300)
+            _write_bytes(w / "labels" / "l2.png", 300)
+            m1 = _write_bytes(w / "masks" / "k1_mask.png", 400)
+            m2 = _write_bytes(w / "masks" / "k2_mask.png", 400)
+            _write_bytes(w / "keyframes.json", 50)
+            _write_bytes(w / "report.json", 60)
+            # data/odm_projects/<name>: hardlinked images + ODM stages + AI clouds
+            (pr / "images").mkdir(parents=True)
+            for src in (f1, f2, m1, m2):
+                os.link(src, pr / "images" / src.name)
+            _write_bytes(pr / "geo.txt", 80)
+            _write_bytes(pr / "opensfm" / "reconstruction.json", 1000)
+            _write_bytes(pr / "openmvs" / "mvs.obj", 1200)
+            _write_bytes(pr / "odm_filterpoints" / "filtered.laz", 900)
+            _write_bytes(pr / "odm_meshing" / "mesh.obj", 700)
+            _write_bytes(pr / "odm_georeferencing" / "odm_georeferenced_model.laz", 5000)
+            _write_bytes(pr / "odm_texturing" / "odm_textured_model_geo.obj", 2500)
+            _write_bytes(pr / "odm_texturing" / "textures" / "0.png", 3000)
+            cls = _write_bytes(pr / "sih3d_classified.laz", 4000)
+            os.link(cls, pr / "sih3d_filled.laz")  # fill_gaps no-op (holes.py)
+            _write_bytes(pr / "sih3d_final.laz", 4500)
+            # viewer/data/<name>
+            _write_bytes(v / "positions.f32", 800)
+            _write_bytes(v / "meta.json", 90)
+
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, name)
+            rows = {lbl: sz for lbl, _, sz in items}
+            # All 14 target rows present (10 dirs + 3 root LAZs + viewer)...
+            self.assertEqual(len(items), 14)
+            self.assertEqual(rows[f"data/runs/{name}/frames"], 5000)
+            self.assertEqual(rows[f"data/odm_projects/{name}/images"], 5800)
+            # ...odm_georeferenced_model.laz only via its directory row (no double count)...
+            self.assertNotIn(f"data/odm_projects/{name}/odm_georeferencing/odm_georeferenced_model.laz", rows)
+            self.assertEqual(rows[f"data/odm_projects/{name}/odm_georeferencing"], 5000)
+            # ...and hardlinked rows remain visible at their full logical size...
+            self.assertEqual(rows[f"data/odm_projects/{name}/sih3d_classified.laz"], 4000)
+            self.assertEqual(rows[f"data/odm_projects/{name}/sih3d_filled.laz"], 4000)
+            sizes = [sz for _, _, sz in items]
+            self.assertEqual(sizes, sorted(sizes, reverse=True))
+            # Baseline totals: logical sums the rows (shared bytes counted per row),
+            # unique counts each inode once.
+            self.assertEqual(logical, 39890)
+            self.assertEqual(unique, 30090)
+            # Hardlink savings: frames+masks hardlinked into images (5800) +
+            # the no-op classified/filled pair (4000).
+            self.assertEqual(logical - unique, 9800)
+            lines = format_report(name, items, (logical, unique))
+            self.assertTrue(any("Logical total: 39.0 KB (39890 bytes) in 14 entries" in l for l in lines))
+            self.assertTrue(any("Unique total:" in l and "30090 bytes" in l for l in lines))
+
+
 class TestDiskUsageCLI(unittest.TestCase):
     def test_cli_disk_usage_output(self):
         import subprocess
