@@ -13,6 +13,8 @@ Covered behaviour:
   * geo.txt format/content is byte-identical to the pre-change implementation
   * repeated setup removes stale linked images/masks; link sources survive
   * no unrelated files or sibling projects are modified; no symlinks are used
+  * odm.run() builds the docker command WITHOUT --pc-las (the uncompressed .las
+    sidecar is never read by the pipeline) while keeping every other flag
 
 All tests are fast, deterministic, CPU-only and avoid:
   GPU, Docker, ODM, COLMAP/OpenMVS, real reconstruction runs, network.
@@ -33,6 +35,7 @@ for p in (str(REPO_ROOT), str(PIPE)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from sih3d import odm
 from sih3d.odm import _hardlink_or_copy, setup_project
 
 JPEG_BYTES = b"\xff\xd8\xff\xe0-fake-jpeg-payload-"
@@ -299,6 +302,54 @@ class TestSetupProjectHardlinks(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in (Path(project) / "images").iterdir()),
                              sorted(["frame_0000.jpg", "frame_0000_mask.png", "frame_0001.jpg"]))
             self.assertEqual((sibling / "sentinel.txt").read_text(), "do-not-touch")
+
+
+class TestOdmRunCommandFlags(unittest.TestCase):
+    """odm.run() must not request the unused uncompressed .las sidecar.
+
+    ODM always writes odm_georeferencing/odm_georeferenced_model.laz; --pc-las only
+    produced an extra uncompressed .las copy that no pipeline stage reads. Docker
+    and ODM are mocked out here: only the constructed command is inspected.
+    """
+
+    @staticmethod
+    def _run_odm_sh():
+        for base in Path(__file__).resolve().parents:
+            candidate = base / "sih3d_pipeline" / "scripts" / "run_odm.sh"
+            if candidate.exists():
+                return candidate.read_text()
+        raise AssertionError("sih3d_pipeline/scripts/run_odm.sh not found")
+
+    def _command(self, **run_kwargs):
+        """Call odm.run() with docker mocked out; return the constructed command."""
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            project = td / "proj"
+            project.mkdir()
+            with mock.patch("sih3d.odm.docker_threads", return_value=(4, 8.0)), \
+                 mock.patch("sih3d.odm.subprocess") as fake_subprocess:
+                fake_subprocess.run.return_value = mock.Mock(returncode=0)
+                result = odm.run(project, log_path=td / "odm_run.log", **run_kwargs)
+            self.assertTrue(result["ok"])
+            return fake_subprocess.run.call_args[0][0]
+
+    def test_command_has_no_pc_las(self):
+        self.assertNotIn("--pc-las", self._command())
+
+    def test_command_keeps_important_arguments(self):
+        cmd = self._command()
+        self.assertEqual(cmd[:3], ["docker", "run", "--rm"])
+        self.assertIn("opendronemap/odm", cmd)
+        self.assertIn("proj", cmd)  # ODM project name
+        for flag in ("--project-path", "--dsm", "--pc-classify", "--auto-boundary", "--geo",
+                     "--matcher-order", "--camera-lens", "--pc-quality", "--max-concurrency"):
+            self.assertIn(flag, cmd)
+        self.assertIn("/datasets/proj/geo.txt", cmd)  # --geo value intact
+
+    def test_run_odm_sh_has_no_pc_las(self):
+        script = self._run_odm_sh()
+        self.assertNotIn("--pc-las", script)
+        self.assertIn("--dsm", script)
 
 
 if __name__ == "__main__":

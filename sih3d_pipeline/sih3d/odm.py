@@ -74,7 +74,7 @@ def run(project, mode="full", extra=None, rolling_shutter=False, camera_lens="au
     log_path = Path(log_path or project / "odm_run.log")
     # --auto-boundary keeps the model to the area around the camera track. Without it, an uncalibrated wide lens left
     # a few points ~350 km away (AGZ via plain .SRT), and meshing tiled that whole extent.
-    base = ["--dsm", "--pc-las", "--pc-classify", "--auto-boundary", "--geo", "/datasets/%s/geo.txt" % project.name,
+    base = ["--dsm", "--pc-classify", "--auto-boundary", "--geo", "/datasets/%s/geo.txt" % project.name,
             "--matcher-order", "10", "--camera-lens", camera_lens, *MODES[mode]]
     if rolling_shutter:
         base.append("--rolling-shutter")
