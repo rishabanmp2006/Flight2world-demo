@@ -256,7 +256,8 @@ def main():
             log(f"Cleanup for '{a.name}' in {project_dir}:")
             for p, s in sized:
                 log(f"  {p}  ({_human_size(s)})")
-            log(f"Total reclaimable: {_human_size(total)} in {len(sized)} directories")
+            log(f"Total reclaimable: {_human_size(total)} in {len(sized)} entries "
+                f"(unique file bytes; hardlinked files counted once)")
             log(f"Protected (never deleted): video, telemetry, data/runs/<name>/frames, final LAZs, "
                 f"odm_texturing/, viewer/data/, report.json, keyframes.json, coords.txt, reconstruction.json "
                 f"(if required) – only {', '.join(DELETABLE_SUBDIRS)} are considered.")

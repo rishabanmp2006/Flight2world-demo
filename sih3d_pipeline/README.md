@@ -100,8 +100,9 @@ deleted):
 .venv/bin/python -m sih3d cleanup --name <run>
 ```
 
-Note: ODM also writes `odm_orthophoto/`, `odm_dem/` and `odm_report/`, which
-`disk-usage` does not list — for the full picture of a project directory use
+ODM's map outputs (`odm_orthophoto/`, `odm_dem/`, `odm_report/`) are listed
+here too and, like the other ODM intermediates, are part of the cleanup
+dry-run for a successful run. For anything outside the listed targets use
 `du -sh data/odm_projects/<run>/*`.
 
 ## Tested with

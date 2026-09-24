@@ -110,6 +110,9 @@ def collect_disk_usage(
         (f"data/odm_projects/{name}/odm_meshing", project / "odm_meshing"),
         (f"data/odm_projects/{name}/odm_georeferencing", project / "odm_georeferencing"),
         (f"data/odm_projects/{name}/odm_texturing", project / "odm_texturing"),
+        (f"data/odm_projects/{name}/odm_orthophoto", project / "odm_orthophoto"),
+        (f"data/odm_projects/{name}/odm_dem", project / "odm_dem"),
+        (f"data/odm_projects/{name}/odm_report", project / "odm_report"),
     ]
 
     items: list[tuple[str, Path, int]] = []

@@ -305,6 +305,42 @@ class TestHardlinkDedup(unittest.TestCase):
         self.assertTrue(any("images" in l for l in lines))
 
 
+class TestOdmOutputDirs(unittest.TestCase):
+    """ODM's map outputs (odm_orthophoto/, odm_dem/, odm_report/) are listed
+    as first-class directory targets."""
+
+    def test_odm_orthophoto_dem_report_reported(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, projects, viewer = td / "runs", td / "projects", td / "viewer"
+            name = "odmouts"
+            _write_bytes(projects / name / "odm_orthophoto" / "odm_orthophoto.tif", 1200)
+            _write_bytes(projects / name / "odm_dem" / "dsm.tif", 900)
+            _write_bytes(projects / name / "odm_report" / "report.pdf", 300)
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, name)
+            rows = {lbl: sz for lbl, _, sz in items}
+            self.assertEqual(rows[f"data/odm_projects/{name}/odm_orthophoto"], 1200)
+            self.assertEqual(rows[f"data/odm_projects/{name}/odm_dem"], 900)
+            self.assertEqual(rows[f"data/odm_projects/{name}/odm_report"], 300)
+            # logical-vs-unique accounting and sorting preserved
+            self.assertEqual(logical, 1200 + 900 + 300)
+            self.assertEqual(unique, 1200 + 900 + 300)
+            sizes = [sz for _, _, sz in items]
+            self.assertEqual(sizes, sorted(sizes, reverse=True))
+
+    def test_missing_odm_output_dirs_graceful(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, projects, viewer = td / "runs", td / "projects", td / "viewer"
+            work.mkdir()
+            projects.mkdir()
+            viewer.mkdir()
+            # none of the (new) ODM output dirs exist -> skipped gracefully
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, "missing")
+            self.assertEqual(items, [])
+            self.assertEqual((logical, unique), (0, 0))
+
+
 class TestCompletedRunBaseline(unittest.TestCase):
     """Deterministic baseline for the measurement path: a miniature of the
     layout a completed `python -m sih3d run` produces (see cmd_run in

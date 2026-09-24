@@ -41,8 +41,10 @@ def _make_successful_run(work_root: Path, projects_root: Path, name: str = "test
 
 
 class TestCleanupDeletableSet(unittest.TestCase):
-    def test_only_four_deletable(self):
-        self.assertEqual(DELETABLE_SUBDIRS, ["opensfm", "openmvs", "odm_filterpoints", "odm_meshing"])
+    def test_deletable_set_includes_odm_outputs(self):
+        self.assertEqual(DELETABLE_SUBDIRS,
+                         ["opensfm", "openmvs", "odm_filterpoints", "odm_meshing",
+                          "odm_orthophoto", "odm_dem", "odm_report"])
 
     def test_get_deletable_returns_only_existing(self):
         with tempfile.TemporaryDirectory() as td:
@@ -61,11 +63,13 @@ class TestCleanupDeletableSet(unittest.TestCase):
             proj = td / "proj"
             proj.mkdir()
             # create protected dirs that must NOT be considered deletable
-            for protected in ["images", "odm_georeferencing", "odm_texturing", "odm_dem"]:
+            for protected in ["images", "odm_georeferencing", "odm_texturing"]:
                 (proj / protected).mkdir()
+            # odm_dem is an ODM map output: deletable like the other intermediates
+            (proj / "odm_dem").mkdir()
             (proj / "opensfm").mkdir()
             found = get_deletable_paths(proj)
-            self.assertEqual([p.name for p in found], ["opensfm"])
+            self.assertEqual([p.name for p in found], ["opensfm", "odm_dem"])
 
 
 class TestCleanupDryRun(unittest.TestCase):
@@ -81,7 +85,7 @@ class TestCleanupDryRun(unittest.TestCase):
                 (p / "file.bin").write_bytes(b"x" * 1024)
             res = run_cleanup(work, projects, "run1", confirm=False)
             self.assertTrue(res["dry_run"])
-            self.assertEqual(len(res["deletable"]), 4)
+            self.assertEqual(len(res["deletable"]), len(DELETABLE_SUBDIRS))
             for sub in DELETABLE_SUBDIRS:
                 self.assertTrue((proj_dir / sub).exists(), f"{sub} should still exist after dry-run")
 
@@ -107,7 +111,7 @@ class TestCleanupDryRun(unittest.TestCase):
             # need coords for is_run_successful fallback
             res = run_cleanup(work, projects, "run2", confirm=True)
             self.assertFalse(res["dry_run"])
-            self.assertEqual(len(res["deleted"]), 4)
+            self.assertEqual(len(res["deleted"]), len(DELETABLE_SUBDIRS))
             for sub in DELETABLE_SUBDIRS:
                 self.assertFalse((proj_dir / sub).exists(), f"{sub} should be deleted")
             # protected survive
@@ -393,6 +397,131 @@ class TestSupersededLazCleanup(unittest.TestCase):
             self.assertTrue(odm_laz.exists())
             self.assertEqual(odm_laz.read_bytes(), b"odm-original-cloud-bytes")
             self.assertTrue((proj / "sih3d_final.laz").exists())
+
+
+class TestOdmOutputDirs(unittest.TestCase):
+    """odm_orthophoto/, odm_dem/, odm_report/ – ODM map outputs the pipeline
+    never reads after the run.  They must behave exactly like the other
+    audit-approved intermediates: listed as candidates, cleanable only under
+    the existing successful-run gate, protected artifacts untouched."""
+
+    def test_odm_output_dirs_are_deletable_candidates(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_successful_run(td / "runs", td / "projects", "odmouts")
+            for sub in ["odm_orthophoto", "odm_dem", "odm_report"]:
+                (proj / sub).mkdir()
+            names = {p.name for p in get_deletable_paths(proj)}
+            for sub in ["odm_orthophoto", "odm_dem", "odm_report"]:
+                self.assertIn(sub, names)
+            # protected outputs stay out of the candidate set
+            for protected in ["images", "odm_georeferencing", "odm_texturing"]:
+                self.assertNotIn(protected, names)
+            # missing ODM outputs are tolerated (no candidates for them)
+            names_only = {p.name for p in get_deletable_paths(proj) if p.name == "odm_report"}
+            self.assertEqual(names_only, {"odm_report"})
+
+    def test_confirm_deletes_odm_output_dirs_keeps_protected(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_successful_run(td / "runs", td / "projects", "odmdel")
+            for sub in ["odm_orthophoto", "odm_dem", "odm_report"]:
+                (proj / sub).mkdir()
+                (proj / sub / "out.bin").write_bytes(b"x" * 128)
+            # protected – must survive
+            (proj / "odm_texturing").mkdir()
+            (proj / "odm_texturing" / "odm_textured_model_geo.obj").write_text("mesh")
+            (proj / "sih3d_final.laz").write_text("final")
+            res = run_cleanup(td / "runs", td / "projects", "odmdel", confirm=True)
+            deleted_names = {Path(p).name for p in res["deleted"]}
+            for sub in ["odm_orthophoto", "odm_dem", "odm_report"]:
+                self.assertIn(sub, deleted_names)
+                self.assertFalse((proj / sub).exists())
+            # deliverables and protected outputs survive
+            self.assertTrue((proj / "odm_georeferencing" / "odm_georeferenced_model.laz").exists())
+            self.assertTrue((proj / "odm_georeferencing" / "coords.txt").exists())
+            self.assertTrue((proj / "odm_texturing" / "odm_textured_model_geo.obj").exists())
+            self.assertTrue((proj / "sih3d_final.laz").exists())
+
+    def test_unsuccessful_run_keeps_odm_output_dirs(self):
+        # the new dirs get no extra gate: they are deleted only when the
+        # existing successful-run gate passes (same as the other intermediates)
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work = td / "runs" / "badodm"
+            proj = td / "projects" / "badodm"
+            work.mkdir(parents=True)
+            proj.mkdir(parents=True)
+            (work / "report.json").write_text(json.dumps({"reconstruction": {"ok": False}}))
+            (proj / "odm_orthophoto").mkdir()
+            (proj / "odm_dem").mkdir()
+            with self.assertRaises(SystemExit):
+                run_cleanup(td / "runs", td / "projects", "badodm", confirm=True)
+            self.assertTrue((proj / "odm_orthophoto").exists())
+            self.assertTrue((proj / "odm_dem").exists())
+
+
+class TestCleanupUniqueSizing(unittest.TestCase):
+    """The dry-run reclaimable total must count each (st_dev, st_ino) once:
+    a no-op fill_gaps leaves sih3d_filled.laz as a hardlink of
+    sih3d_classified.laz, and the old per-path sum double-counted that."""
+
+    def test_hardlinked_laz_pair_counted_once_in_total(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_successful_run(td / "runs", td / "projects", "uniq1")
+            for sub in DELETABLE_SUBDIRS:
+                (proj / sub).mkdir(parents=True, exist_ok=True)
+                (proj / sub / "a.txt").write_text("hello")  # 5 B each
+            payload = b"c" * 4000
+            (proj / "sih3d_classified.laz").write_bytes(payload)
+            os.link(proj / "sih3d_classified.laz", proj / "sih3d_filled.laz")
+            (proj / "sih3d_final.laz").write_bytes(b"final")
+            listed, total, sized = collect_cleanup_info(proj)
+            by_name = {p.name: s for p, s in sized}
+            # both rows stay listed at their full logical size...
+            self.assertEqual(by_name["sih3d_classified.laz"], 4000)
+            self.assertEqual(by_name["sih3d_filled.laz"], 4000)
+            # ...but the reclaimable total counts the shared inode once
+            self.assertEqual(total, len(DELETABLE_SUBDIRS) * 5 + 4000)
+            res = run_cleanup(td / "runs", td / "projects", "uniq1", confirm=False)
+            self.assertEqual(res["total_bytes"], len(DELETABLE_SUBDIRS) * 5 + 4000)
+            # deletion behavior unchanged: both names removed
+            res = run_cleanup(td / "runs", td / "projects", "uniq1", confirm=True)
+            self.assertFalse((proj / "sih3d_classified.laz").exists())
+            self.assertFalse((proj / "sih3d_filled.laz").exists())
+            self.assertTrue((proj / "sih3d_final.laz").exists())
+
+    def test_hardlinked_file_across_two_deletable_dirs_counted_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_successful_run(td / "runs", td / "projects", "uniq2")
+            (proj / "opensfm").mkdir()
+            (proj / "openmvs").mkdir()
+            src = proj / "opensfm" / "shared.bin"
+            src.write_bytes(b"z" * 1234)
+            os.link(src, proj / "openmvs" / "shared.bin")
+            _, total, sized = collect_cleanup_info(proj)
+            by_name = {p.name: s for p, s in sized}
+            # each row shows what it contains...
+            self.assertEqual(by_name["opensfm"], 1234)
+            self.assertEqual(by_name["openmvs"], 1234)
+            # ...the total counts the inode once
+            self.assertEqual(total, 1234)
+
+    def test_copies_with_different_inodes_counted_in_full(self):
+        # shutil.copy2 fallback topology: identical content, different inodes
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_successful_run(td / "runs", td / "projects", "uniq3")
+            payload = b"d" * 2500
+            (proj / "sih3d_classified.laz").write_bytes(payload)
+            (proj / "sih3d_filled.laz").write_bytes(payload)  # distinct inode
+            (proj / "sih3d_final.laz").write_bytes(b"final")
+            self.assertNotEqual(os.stat(proj / "sih3d_classified.laz").st_ino,
+                                os.stat(proj / "sih3d_filled.laz").st_ino)
+            _, total, _ = collect_cleanup_info(proj)
+            self.assertEqual(total, 2500 + 2500)
 
 
 if __name__ == "__main__":
