@@ -70,6 +70,16 @@ docker pull opendronemap/odm
 python3 -m http.server 8765 --bind 127.0.0.1
 ```
 
+Each stage prints one summary line (telemetry fixes, keyframes selected, GPS-fusion accepted /
+rejected / fallback / quality, Docker availability, reconstruction result). `--segment` defaults
+to `all`: every detected shot contributes keyframes, so multi-shot or photo-sequence surveys
+keep their full coverage — pass `--segment longest` to reconstruct only the single longest shot.
+GPS fusion validates its own Kalman/RTS track against the raw fixes: when the filter rejects too
+much of the flight or drifts away from the observations, the run falls back to the raw GPS track
+and says so loudly (log warning + `gps_fusion` diagnostics in report.json). `keyframes.json` and
+`report.json` are written before ODM starts, so a failed or Docker-less run still records exactly
+how far it got.
+
 Outputs go to `data/runs/<name>/report.json` and `data/odm_projects/<name>/` (textured mesh, point
 clouds, orthophoto). [DATA.md](DATA.md) has the commands for each benchmark dataset.
 

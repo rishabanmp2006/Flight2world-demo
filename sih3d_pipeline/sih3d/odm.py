@@ -54,10 +54,23 @@ def setup_project(projects_root, name, frames_dir, records, fused, masks_dir=Non
     return project
 
 
+class DockerUnavailable(RuntimeError):
+    """Docker cannot be used: the executable is missing from PATH or the daemon is unreachable.
+
+    Raised instead of an unhandled FileNotFoundError / SystemExit so the run orchestration
+    can record the failure in report.json (same failure structure as a failed ODM run).
+    """
+
+
 def docker_threads():
-    out = subprocess.run(["docker", "info", "--format", "{{.MemTotal}} {{.NCPU}}"], capture_output=True, text=True)
+    try:
+        out = subprocess.run(["docker", "info", "--format", "{{.MemTotal}} {{.NCPU}}"], capture_output=True, text=True)
+    except FileNotFoundError as e:
+        raise DockerUnavailable(
+            "docker executable not found on PATH - install Docker Desktop, start it, then re-run") from e
     if out.returncode:
-        raise SystemExit("Docker is not running: open Docker Desktop and retry")
+        detail = ((out.stderr or out.stdout or "").strip().splitlines() or ["no details"])[0][:160]
+        raise DockerUnavailable(f"Docker is not running: open Docker Desktop and retry (docker info failed: {detail})")
     mem, cpus = out.stdout.split()
     gb = int(mem) / 2 ** 30
     return max(2, min(int(cpus), int(gb) - 3)), round(gb, 1)  # ODM peaks around 1 GB per thread
