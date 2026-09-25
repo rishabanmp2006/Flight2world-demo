@@ -50,7 +50,7 @@ data/
 │
 ├── simulated/                 generated     photos or frames rebuilt as video + .SRT
 ├── processed/<name>/          generated     keyframes with GPS, geo.txt, gps_priors.txt, report.json
-├── odm_projects/<name>/       generated     OpenDroneMap: textured mesh, point cloud, orthophoto, DSM
+├── odm_projects/<name>/       generated     OpenDroneMap: textured mesh, point cloud, orthophoto
 ├── runs/<name>/               generated     report.json per `python -m sih3d run`
 └── results/                   generated     measurement and accuracy outputs
 models/

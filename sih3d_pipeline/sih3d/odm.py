@@ -15,7 +15,7 @@ MODES = {
     "full": ["--pc-quality", "medium", "--feature-quality", "high", "--mesh-size", "300000"],
     # near-real-time preview: coarse cloud and mesh in a few minutes
     "preview": ["--pc-quality", "lowest", "--feature-quality", "medium", "--mesh-size", "60000",
-                "--skip-report", "--orthophoto-resolution", "10"],
+                "--orthophoto-resolution", "10"],
 }
 STAGES = ["dataset", "split", "merge", "opensfm", "openmvs", "odm_filterpoints", "odm_meshing", "mvs_texturing",
           "odm_georeferencing", "odm_dem", "odm_orthophoto", "odm_report", "odm_postprocess"]
@@ -74,7 +74,10 @@ def run(project, mode="full", extra=None, rolling_shutter=False, camera_lens="au
     log_path = Path(log_path or project / "odm_run.log")
     # --auto-boundary keeps the model to the area around the camera track. Without it, an uncalibrated wide lens left
     # a few points ~350 km away (AGZ via plain .SRT), and meshing tiled that whole extent.
-    base = ["--dsm", "--pc-classify", "--auto-boundary", "--geo", "/datasets/%s/geo.txt" % project.name,
+    # --skip-report (all modes): ODM's PDF report (odm_report/) is never read by the pipeline –
+    # Flight2World writes its own data/runs/<name>/report.json.  No --dsm: the DSM
+    # (odm_dem/dsm.tif) is a QGIS export only and nothing downstream reads it either.
+    base = ["--skip-report", "--pc-classify", "--auto-boundary", "--geo", "/datasets/%s/geo.txt" % project.name,
             "--matcher-order", "10", "--camera-lens", camera_lens, *MODES[mode]]
     if rolling_shutter:
         base.append("--rolling-shutter")
