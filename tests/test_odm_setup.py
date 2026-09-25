@@ -341,15 +341,43 @@ class TestOdmRunCommandFlags(unittest.TestCase):
         self.assertEqual(cmd[:3], ["docker", "run", "--rm"])
         self.assertIn("opendronemap/odm", cmd)
         self.assertIn("proj", cmd)  # ODM project name
-        for flag in ("--project-path", "--dsm", "--pc-classify", "--auto-boundary", "--geo",
+        for flag in ("--project-path", "--skip-report", "--pc-classify", "--auto-boundary", "--geo",
                      "--matcher-order", "--camera-lens", "--pc-quality", "--max-concurrency"):
             self.assertIn(flag, cmd)
         self.assertIn("/datasets/proj/geo.txt", cmd)  # --geo value intact
 
-    def test_run_odm_sh_has_no_pc_las(self):
+    def test_run_odm_sh_has_no_pc_las_or_dsm(self):
         script = self._run_odm_sh()
         self.assertNotIn("--pc-las", script)
-        self.assertIn("--dsm", script)
+        self.assertNotIn("--dsm", script)
+
+    # -- ODM report and DSM are not generated in any mode ----------------------
+
+    def test_full_mode_skips_odm_report(self):
+        # mode defaults to "full"; --skip-report must be in the base command
+        self.assertIn("--skip-report", self._command())
+
+    def test_preview_mode_skips_odm_report(self):
+        # preview already used --skip-report before it moved into the base command
+        self.assertIn("--skip-report", self._command(mode="preview"))
+
+    def test_no_dsm_in_any_mode(self):
+        # the DSM (odm_dem/dsm.tif) is a QGIS export only: nothing downstream reads it
+        self.assertNotIn("--dsm", self._command())
+        self.assertNotIn("--dsm", self._command(mode="preview"))
+
+    def test_required_flags_present_in_both_modes(self):
+        for mode in ("full", "preview"):
+            cmd = self._command(mode=mode)
+            for flag in ("--project-path", "--pc-classify", "--auto-boundary", "--geo",
+                         "--matcher-order", "--camera-lens", "--pc-quality", "--max-concurrency"):
+                self.assertIn(flag, cmd, f"{flag} missing in {mode} mode")
+        # orthophoto generation is untouched: preview keeps its coarse resolution,
+        # full uses ODM's default
+        preview = self._command(mode="preview")
+        i = preview.index("--orthophoto-resolution")
+        self.assertEqual(preview[i + 1], "10")
+        self.assertNotIn("--orthophoto-resolution", self._command())
 
 
 if __name__ == "__main__":

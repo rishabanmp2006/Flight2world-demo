@@ -29,7 +29,7 @@ python3 -m http.server 8765 --bind 127.0.0.1
 ```
 
 Outputs: `data/runs/<name>/report.json` (every stage's numbers and timings) and `data/odm_projects/<name>/`
-(textured mesh, point clouds, orthophoto, DSM).
+(textured mesh, point clouds, orthophoto).
 
 ## Pipeline
 

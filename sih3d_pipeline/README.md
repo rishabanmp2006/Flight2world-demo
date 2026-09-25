@@ -71,7 +71,7 @@ python3 -m http.server 8765 --bind 127.0.0.1
 ```
 
 Outputs go to `data/runs/<name>/report.json` and `data/odm_projects/<name>/` (textured mesh, point
-clouds, orthophoto, DSM). [DATA.md](DATA.md) has the commands for each benchmark dataset.
+clouds, orthophoto). [DATA.md](DATA.md) has the commands for each benchmark dataset.
 
 ## Storage baseline
 
