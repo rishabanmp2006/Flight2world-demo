@@ -1,0 +1,159 @@
+9
+00:00:04,000 --> 00:00:04,500
+FrameCnt: 9, source: DSC00238.JPG
+[latitude: 41.3034078] [longitude: -81.7529883] [rel_alt: -5.063 abs_alt: 341.252]
+
+10
+00:00:04,500 --> 00:00:05,000
+FrameCnt: 10, source: DSC00239.JPG
+[latitude: 41.3034251] [longitude: -81.7523136] [rel_alt: -3.359 abs_alt: 342.956]
+
+11
+00:00:05,000 --> 00:00:05,500
+FrameCnt: 11, source: DSC00240.JPG
+[latitude: 41.3034802] [longitude: -81.7517445] [rel_alt: -2.254 abs_alt: 344.061]
+
+12
+00:00:05,500 --> 00:00:06,000
+FrameCnt: 12, source: DSC00241.JPG
+[latitude: 41.3035040] [longitude: -81.7511899] [rel_alt: -2.081 abs_alt: 344.234]
+
+13
+00:00:06,000 --> 00:00:06,500
+FrameCnt: 13, source: DSC00242.JPG
+[latitude: 41.3039692] [longitude: -81.7507909] [rel_alt: -2.523 abs_alt: 343.792]
+
+14
+00:00:06,500 --> 00:00:07,000
+FrameCnt: 14, source: DSC00243.JPG
+[latitude: 41.3043353] [longitude: -81.7508072] [rel_alt: -5.238 abs_alt: 341.077]
+
+15
+00:00:07,000 --> 00:00:07,500
+FrameCnt: 15, source: DSC00244.JPG
+[latitude: 41.3045838] [longitude: -81.7516031] [rel_alt: -3.111 abs_alt: 343.204]
+
+16
+00:00:07,500 --> 00:00:08,000
+FrameCnt: 16, source: DSC00246.JPG
+[latitude: 41.3045653] [longitude: -81.7526165] [rel_alt: 0.143 abs_alt: 346.458]
+
+17
+00:00:08,000 --> 00:00:08,500
+FrameCnt: 17, source: DSC00247.JPG
+[latitude: 41.3045452] [longitude: -81.7531269] [rel_alt: 2.042 abs_alt: 348.357]
+
+18
+00:00:08,500 --> 00:00:09,000
+FrameCnt: 18, source: DSC00249.JPG
+[latitude: 41.3036292] [longitude: -81.7518737] [rel_alt: -1.062 abs_alt: 345.253]
+
+19
+00:00:09,000 --> 00:00:09,500
+FrameCnt: 19, source: DSC00251.JPG
+[latitude: 41.3044263] [longitude: -81.7518100] [rel_alt: -6.416 abs_alt: 339.899]
+
+20
+00:00:09,500 --> 00:00:10,000
+FrameCnt: 20, source: DSC00252.JPG
+[latitude: 41.3043779] [longitude: -81.7522945] [rel_alt: -5.254 abs_alt: 341.061]
+
+21
+00:00:10,000 --> 00:00:10,500
+FrameCnt: 21, source: DSC00253.JPG
+[latitude: 41.3044042] [longitude: -81.7528406] [rel_alt: -5.823 abs_alt: 340.492]
+
+22
+00:00:10,500 --> 00:00:11,000
+FrameCnt: 22, source: DSC00254.JPG
+[latitude: 41.3037130] [longitude: -81.7525376] [rel_alt: -5.192 abs_alt: 341.123]
+
+23
+00:00:11,000 --> 00:00:11,500
+FrameCnt: 23, source: DSC00255.JPG
+[latitude: 41.3037885] [longitude: -81.7520481] [rel_alt: -4.391 abs_alt: 341.924]
+
+24
+00:00:11,500 --> 00:00:12,000
+FrameCnt: 24, source: DSC00256.JPG
+[latitude: 41.3038491] [longitude: -81.7515604] [rel_alt: -4.833 abs_alt: 341.482]
+
+25
+00:00:12,000 --> 00:00:12,500
+FrameCnt: 25, source: DSC00257.JPG
+[latitude: 41.3039471] [longitude: -81.7510319] [rel_alt: -4.888 abs_alt: 341.427]
+
+26
+00:00:12,500 --> 00:00:13,000
+FrameCnt: 26, source: DSC00258.JPG
+[latitude: 41.3042337] [longitude: -81.7512891] [rel_alt: -2.768 abs_alt: 343.547]
+
+27
+00:00:13,000 --> 00:00:13,500
+FrameCnt: 27, source: DSC00259.JPG
+[latitude: 41.3042343] [longitude: -81.7518822] [rel_alt: -1.438 abs_alt: 344.877]
+
+28
+00:00:13,500 --> 00:00:14,000
+FrameCnt: 28, source: DSC00260.JPG
+[latitude: 41.3041796] [longitude: -81.7524315] [rel_alt: -2.434 abs_alt: 343.881]
+
+29
+00:00:14,000 --> 00:00:14,500
+FrameCnt: 29, source: DSC00261.JPG
+[latitude: 41.3041604] [longitude: -81.7529557] [rel_alt: -2.148 abs_alt: 344.167]
+
+30
+00:00:14,500 --> 00:00:15,000
+FrameCnt: 30, source: DSC00263.JPG
+[latitude: 41.3039476] [longitude: -81.7519217] [rel_alt: -3.915 abs_alt: 342.400]
+
+31
+00:00:15,000 --> 00:00:15,500
+FrameCnt: 31, source: DSC00264.JPG
+[latitude: 41.3039172] [longitude: -81.7524201] [rel_alt: -5.443 abs_alt: 340.872]
+
+32
+00:00:15,500 --> 00:00:16,000
+FrameCnt: 32, source: DSC00265.JPG
+[latitude: 41.3038908] [longitude: -81.7525851] [rel_alt: -3.647 abs_alt: 342.668]
+
+33
+00:00:16,000 --> 00:00:16,500
+FrameCnt: 33, source: DSC00267.JPG
+[latitude: 41.3039548] [longitude: -81.7536107] [rel_alt: -0.531 abs_alt: 345.784]
+
+34
+00:00:16,500 --> 00:00:17,000
+FrameCnt: 34, source: DSC00268.JPG
+[latitude: 41.3038360] [longitude: -81.7504510] [rel_alt: -3.889 abs_alt: 342.426]
+
+35
+00:00:17,000 --> 00:00:17,500
+FrameCnt: 35, source: DSC00269.JPG
+[latitude: 41.3041955] [longitude: -81.7505062] [rel_alt: -3.139 abs_alt: 343.176]
+
+36
+00:00:17,500 --> 00:00:18,000
+FrameCnt: 36, source: DSC00270.JPG
+[latitude: 41.3045473] [longitude: -81.7504956] [rel_alt: -3.196 abs_alt: 343.119]
+
+37
+00:00:18,000 --> 00:00:18,500
+FrameCnt: 37, source: DSC00271.JPG
+[latitude: 41.3048244] [longitude: -81.7512197] [rel_alt: -1.918 abs_alt: 344.397]
+
+38
+00:00:18,500 --> 00:00:19,000
+FrameCnt: 38, source: DSC00272.JPG
+[latitude: 41.3047958] [longitude: -81.7517323] [rel_alt: -2.246 abs_alt: 344.069]
+
+39
+00:00:19,000 --> 00:00:19,500
+FrameCnt: 39, source: DSC00273.JPG
+[latitude: 41.3048022] [longitude: -81.7522152] [rel_alt: -5.047 abs_alt: 341.268]
+
+40
+00:00:19,500 --> 00:00:20,000
+FrameCnt: 40, source: DSC00274.JPG
+[latitude: 41.3047610] [longitude: -81.7527252] [rel_alt: -5.352 abs_alt: 340.963]

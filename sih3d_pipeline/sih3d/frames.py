@@ -62,7 +62,7 @@ def _normalise_exposure(paths, strength=0.7):
 
 
 def extract_keyframes(video, out_dir, calib=None, sample_fps=5.0, min_shift=0.10, max_gap=2.0, blur_ratio=0.35,
-                      cut_ratio=3.0, segment="longest", normalise=True, deblock=True, max_size=0):
+                      cut_ratio=3.0, segment="all", normalise=True, deblock=True, max_size=0):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     cap = cv2.VideoCapture(str(video))

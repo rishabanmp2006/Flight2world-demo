@@ -110,6 +110,9 @@ def collect_disk_usage(
         (f"data/odm_projects/{name}/odm_meshing", project / "odm_meshing"),
         (f"data/odm_projects/{name}/odm_georeferencing", project / "odm_georeferencing"),
         (f"data/odm_projects/{name}/odm_texturing", project / "odm_texturing"),
+        # 2.5D textured mesh written by the ODM texturing stage alongside
+        # odm_texturing/; consumed only by odm_orthophoto (see cleanup.py).
+        (f"data/odm_projects/{name}/odm_texturing_25d", project / "odm_texturing_25d"),
         (f"data/odm_projects/{name}/odm_orthophoto", project / "odm_orthophoto"),
         (f"data/odm_projects/{name}/odm_dem", project / "odm_dem"),
         (f"data/odm_projects/{name}/odm_report", project / "odm_report"),

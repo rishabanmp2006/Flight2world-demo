@@ -11,6 +11,7 @@ Stages: telemetry -> keyframes (cuts, blur, undistortion, exposure, deblocking) 
 """
 import argparse
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -62,35 +63,74 @@ def cmd_run(a):
     work = Path(a.work) / a.name
     frames_dir = work / "frames"
     timer = Timer()
+    records: list = []
     report = {"name": a.name, "mode": a.mode, "inputs": {"video": str(a.video), "telemetry": str(a.telemetry),
                                                         "calibration": str(a.calib or "")}}
 
-    with timer("telemetry"):
-        tel = telemetry.load(a.telemetry, a.agz_range)
-        report["telemetry"] = tel.summary()
+    def persist():
+        """Persist the run state (keyframes.json + report.json) as it stands right now."""
+        work.mkdir(parents=True, exist_ok=True)
+        report["timings_s"] = dict(timer.times)
+        (work / "keyframes.json").write_text(json.dumps(records, indent=1))
+        (work / "report.json").write_text(json.dumps(report, indent=2, default=str))
 
-    with timer("keyframes"):
-        calib = frames.load_calibration(a.calib) if a.calib else None
-        records, report["keyframes"] = frames.extract_keyframes(
-            a.video, frames_dir, calib=calib, sample_fps=a.sample_fps, min_shift=a.min_shift, max_gap=a.max_gap,
-            segment=a.segment, normalise=not a.no_normalise, deblock=not a.no_deblock, max_size=a.max_size)
-    if len(records) < 5:
-        raise SystemExit(f"Only {len(records)} keyframes: the video is too short or static for reconstruction")
+    try:
+        with timer("telemetry"):
+            tel = telemetry.load(a.telemetry, a.agz_range)
+            report["telemetry"] = {**tel.summary(), "ok": True}
+    except (SystemExit, Exception) as e:
+        report["telemetry"] = {"ok": False, "error": str(e)}
+        persist()
+        log("Telemetry: failure")
+        raise
+    log(f"Telemetry: fixes: {report['telemetry']['gps_fixes']} ({report['telemetry']['source']})")
 
-    with timer("gps_fusion"):
-        times = np.array([r["t"] for r in records])
-        if a.agz_range:
-            _, ft = telemetry.agz_frame_times(a.telemetry, *a.agz_range)
-            times = ft[np.array([r["frame"] for r in records])]
-        fused = fusion.fuse(tel, times)
-        raw = {k: np.interp(times, tel.t, getattr(tel, k)) for k in ("lat", "lon", "alt")}
-        focal35 = a.focal35 or report["keyframes"]["focal35"]
-        for i, r in enumerate(records):
-            r.update(t=float(times[i]), raw_lat=float(raw["lat"][i]), raw_lon=float(raw["lon"][i]),
-                     raw_alt=float(raw["alt"][i]), lat=float(fused["lat"][i]), lon=float(fused["lon"][i]),
-                     alt=float(fused["alt"][i]), h_std=float(fused["h_std"][i]), v_std=float(fused["v_std"][i]))
-            write_gps_exif(frames_dir / r["name"], r["lat"], r["lon"], r["alt"], focal35)
-        report["gps_fusion"] = fused["stats"]
+    try:
+        with timer("keyframes"):
+            calib = frames.load_calibration(a.calib) if a.calib else None
+            records, report["keyframes"] = frames.extract_keyframes(
+                a.video, frames_dir, calib=calib, sample_fps=a.sample_fps, min_shift=a.min_shift, max_gap=a.max_gap,
+                segment=a.segment, normalise=not a.no_normalise, deblock=not a.no_deblock, max_size=a.max_size)
+            if len(records) < 5:
+                raise ValueError(f"only {len(records)} usable keyframes extracted")
+            report["keyframes"]["ok"] = True
+    except (SystemExit, Exception) as e:
+        report["keyframes"] = {**report.get("keyframes", {}), "ok": False, "error": str(e)}
+        persist()
+        log(f"Keyframes: failure ({e})")
+        if isinstance(e, ValueError) and "usable keyframes" in str(e):
+            raise SystemExit(f"Only {len(records)} keyframes: the video is too short or static for reconstruction")
+        raise
+    log(f"Keyframes: input frames: {report['keyframes']['frames']}  selected frames: {len(records)}  "
+        f"selection mode: {a.segment}")
+
+    try:
+        with timer("gps_fusion"):
+            times = np.array([r["t"] for r in records])
+            if a.agz_range:
+                _, ft = telemetry.agz_frame_times(a.telemetry, *a.agz_range)
+                times = ft[np.array([r["frame"] for r in records])]
+            fused = fusion.fuse(tel, times)
+            raw = {k: np.interp(times, tel.t, getattr(tel, k)) for k in ("lat", "lon", "alt")}
+            focal35 = a.focal35 or report["keyframes"]["focal35"]
+            for i, r in enumerate(records):
+                r.update(t=float(times[i]), raw_lat=float(raw["lat"][i]), raw_lon=float(raw["lon"][i]),
+                         raw_alt=float(raw["alt"][i]), lat=float(fused["lat"][i]), lon=float(fused["lon"][i]),
+                         alt=float(fused["alt"][i]), h_std=float(fused["h_std"][i]), v_std=float(fused["v_std"][i]))
+                write_gps_exif(frames_dir / r["name"], r["lat"], r["lon"], r["alt"], focal35)
+            report["gps_fusion"] = {**fused["stats"], "ok": True}
+    except (SystemExit, Exception) as e:
+        report["gps_fusion"] = {"ok": False, "error": str(e)}
+        persist()
+        log(f"GPS fusion: failure ({e})")
+        raise
+    st = report["gps_fusion"]
+    log(f"GPS fusion: accepted: {st['accepted']}  rejected: {st['rejected']}  "
+        f"rejection ratio: {st['rejection_ratio']:.0%}  fallback: {'YES' if st['fallback_used'] else 'NO'}  "
+        f"quality: {st['quality']}")
+    for w in st["warnings"]:
+        log(f"WARNING: {w}")
+    persist()  # telemetry + keyframes + fusion state is on disk before anything heavy runs
     names = [r["name"] for r in records]
 
     labels_dir = masks_dir = None
@@ -103,14 +143,23 @@ def cmd_run(a):
             masks_dir = work / "masks"
             report["ai_masks"] = masks.make_masks(frames_dir, names, masks_dir, labels_dir=labels_dir)
 
-    with timer(f"reconstruction_{a.mode}"):
-        project = odm.setup_project(a.projects, a.name, frames_dir, records, fused, masks_dir)
-        report["reconstruction"] = odm.run(project, mode=a.mode, rolling_shutter=a.rolling_shutter,
-                                           camera_lens=a.camera_lens)
-    (work / "keyframes.json").write_text(json.dumps(records, indent=1))
+    report["reconstruction"] = {"attempted": False}
+    persist()  # everything before Docker is persisted BEFORE Docker is invoked
+    docker_path = shutil.which("docker")
+    log(f"Docker: {docker_path if docker_path else 'unavailable (docker executable not found on PATH)'}")
+    try:
+        with timer(f"reconstruction_{a.mode}"):
+            project = odm.setup_project(a.projects, a.name, frames_dir, records, fused, masks_dir)
+            report["reconstruction"] = {"attempted": True, **odm.run(project, mode=a.mode, rolling_shutter=a.rolling_shutter,
+                                           camera_lens=a.camera_lens)}
+    except odm.DockerUnavailable as e:
+        report["reconstruction"] = {"attempted": True, "ok": False, "docker": "unavailable", "reason": str(e)}
+        persist()
+        log("Reconstruction: failure (Docker unavailable)")
+        raise SystemExit(f"Reconstruction failed: {e}")
+    log(f"Reconstruction: {'success' if report['reconstruction']['ok'] else 'failure'}")
     if not report["reconstruction"]["ok"]:
-        report["timings_s"] = timer.times
-        (work / "report.json").write_text(json.dumps(report, indent=2, default=str))
+        persist()
         raise SystemExit(f"Reconstruction failed; see {report['reconstruction'].get('log')}")
     report["outputs"] = odm.outputs(project)
 
@@ -156,7 +205,7 @@ def cmd_run(a):
     log(f"Report: {work / 'report.json'}")
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(prog="python -m sih3d", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -168,7 +217,10 @@ def main():
     r.add_argument("--focal35", type=float, help="35 mm-equivalent focal length when there is no calibration")
     r.add_argument("--name", required=True)
     r.add_argument("--mode", choices=["preview", "full"], default="full")
-    r.add_argument("--segment", default="longest")
+    r.add_argument("--segment", default="all",
+                   help="keyframe shots to keep: all (default - keeps every detected shot, so multi-shot/"
+                        "photo-sequence surveys keep their full coverage), longest (only the single longest "
+                        "shot), or a shot index")
     r.add_argument("--sample-fps", type=float, default=5.0)
     r.add_argument("--min-shift", type=float, default=0.10)
     r.add_argument("--max-gap", type=float, default=2.0)
@@ -209,6 +261,11 @@ def main():
     d.add_argument("--work", default="data/runs", help="runs root (default: data/runs)")
     d.add_argument("--projects", default="data/odm_projects", help="projects root (default: data/odm_projects)")
     d.add_argument("--viewer", default="viewer", help="viewer root (default: viewer, expects viewer/data/<name>)")
+    return ap
+
+
+def main():
+    ap = build_parser()
     a = ap.parse_args()
     if a.cmd == "run":
         cmd_run(a)
