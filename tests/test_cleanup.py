@@ -44,7 +44,13 @@ class TestCleanupDeletableSet(unittest.TestCase):
     def test_deletable_set_includes_odm_outputs(self):
         self.assertEqual(DELETABLE_SUBDIRS,
                          ["opensfm", "openmvs", "odm_filterpoints", "odm_meshing",
-                          "odm_orthophoto", "odm_dem", "odm_report"])
+                          "odm_texturing_25d", "odm_orthophoto", "odm_dem", "odm_report"])
+
+    def test_odm_texturing_25d_in_deletable_set(self):
+        # the 2.5D textured mesh intermediate joins the audit-approved set;
+        # odm_texturing/ (the delivered 3D mesh) must stay out of it
+        self.assertIn("odm_texturing_25d", DELETABLE_SUBDIRS)
+        self.assertNotIn("odm_texturing", DELETABLE_SUBDIRS)
 
     def test_get_deletable_returns_only_existing(self):
         with tempfile.TemporaryDirectory() as td:
@@ -459,6 +465,93 @@ class TestOdmOutputDirs(unittest.TestCase):
                 run_cleanup(td / "runs", td / "projects", "badodm", confirm=True)
             self.assertTrue((proj / "odm_orthophoto").exists())
             self.assertTrue((proj / "odm_dem").exists())
+
+
+class TestOdmTexturing25dCleanup(unittest.TestCase):
+    """odm_texturing_25d/ – the 2.5D textured mesh written by ODM's texturing
+    stage, consumed only by odm_orthophoto.  It must join the audit-approved
+    intermediates: deleted only through the existing successful-run gate, while
+    odm_texturing/, odm_georeferencing/ and the final LAZ stay protected."""
+
+    def test_odm_texturing_25d_is_deletable_candidate(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_successful_run(td / "runs", td / "projects", "t25dcand")
+            (proj / "odm_texturing_25d").mkdir()
+            (proj / "odm_texturing_25d" / "odm_textured_model_geo.obj").write_bytes(b"x" * 1600)
+            # odm_texturing_25d listed, its delivered 3D twin never
+            names = {p.name for p in get_deletable_paths(proj)}
+            self.assertIn("odm_texturing_25d", names)
+            self.assertNotIn("odm_texturing", names)
+            # its size is reported
+            listed, total, sized = collect_cleanup_info(proj)
+            by_name = {p.name: s for p, s in sized}
+            self.assertEqual(by_name["odm_texturing_25d"], 1600)
+            self.assertEqual(total, 1600)
+
+    def test_dry_run_keeps_odm_texturing_25d(self):
+        # incomplete cleanup (dry-run, no --yes) must preserve it
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_successful_run(td / "runs", td / "projects", "t25ddry")
+            (proj / "odm_texturing_25d").mkdir()
+            (proj / "odm_texturing_25d" / "odm_textured_model_geo.obj").write_text("mesh25d")
+            res = run_cleanup(td / "runs", td / "projects", "t25ddry", confirm=False)
+            self.assertTrue(res["dry_run"])
+            self.assertIn("odm_texturing_25d", {Path(p).name for p in res["deletable"]})
+            self.assertTrue((proj / "odm_texturing_25d" / "odm_textured_model_geo.obj").exists())
+
+    def test_successful_cleanup_deletes_odm_texturing_25d_keeps_protected(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_leveled_run(td / "runs", td / "projects", "t25ddel")
+            (proj / "odm_texturing_25d").mkdir()
+            (proj / "odm_texturing_25d" / "odm_textured_model_geo.obj").write_text("mesh25d")
+            (proj / "odm_texturing").mkdir(parents=True, exist_ok=True)
+            (proj / "odm_texturing" / "odm_textured_model_geo.obj").write_text("mesh3d")
+            res = run_cleanup(td / "runs", td / "projects", "t25ddel", confirm=True)
+            self.assertFalse(res["dry_run"])
+            deleted_names = {Path(p).name for p in res["deleted"]}
+            # the 2.5D intermediate goes through the same successful-run gate...
+            self.assertIn("odm_texturing_25d", deleted_names)
+            self.assertFalse((proj / "odm_texturing_25d").exists())
+            # ...while odm_texturing/, odm_georeferencing/ and the final LAZ survive
+            self.assertTrue((proj / "odm_texturing" / "odm_textured_model_geo.obj").exists())
+            self.assertEqual((proj / "odm_texturing" / "odm_textured_model_geo.obj").read_text(), "mesh3d")
+            self.assertTrue((proj / "odm_georeferencing" / "odm_georeferenced_model.laz").exists())
+            self.assertTrue((proj / "odm_georeferencing" / "coords.txt").exists())
+            self.assertTrue((proj / "sih3d_final.laz").exists())
+            self.assertTrue((work / "report.json").exists())
+
+    def test_unsuccessful_run_keeps_odm_texturing_25d(self):
+        # no extra gate and no bypass: the existing successful-run gate protects it
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work = td / "runs" / "bad25d"
+            proj = td / "projects" / "bad25d"
+            work.mkdir(parents=True)
+            proj.mkdir(parents=True)
+            # unreadable report is the deterministic way to make the run
+            # unsuccessful here (every real LAZ is a success marker)
+            (work / "report.json").write_text("{not valid json")
+            (proj / "odm_texturing_25d").mkdir()
+            (proj / "odm_texturing_25d" / "odm_textured_model_geo.obj").write_text("mesh25d")
+            ok, reason = is_run_successful(work, proj)
+            self.assertFalse(ok)
+            with self.assertRaises(SystemExit) as cm:
+                run_cleanup(td / "runs", td / "projects", "bad25d", confirm=True)
+            self.assertIn("not marked successful", str(cm.exception))
+            self.assertTrue((proj / "odm_texturing_25d" / "odm_textured_model_geo.obj").exists())
+
+    def test_missing_odm_texturing_25d_graceful(self):
+        # already-cleaned runs must not fail (same tolerance as the other targets)
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, proj = _make_leveled_run(td / "runs", td / "projects", "t25dmiss")
+            res = run_cleanup(td / "runs", td / "projects", "t25dmiss", confirm=True)
+            self.assertNotIn("odm_texturing_25d", {Path(p).name for p in res["deleted"]})
+            res2 = run_cleanup(td / "runs", td / "projects", "t25dmiss", confirm=True)
+            self.assertEqual(res2["deleted"], [])
 
 
 class TestCleanupUniqueSizing(unittest.TestCase):

@@ -341,6 +341,61 @@ class TestOdmOutputDirs(unittest.TestCase):
             self.assertEqual((logical, unique), (0, 0))
 
 
+class TestOdmTexturing25d(unittest.TestCase):
+    """odm_texturing_25d/ – the 2.5D textured mesh ODM's texturing stage writes
+    for orthophoto generation (consumed only by odm_orthophoto).  It is reported
+    like the other stage directories: its own row, included in both totals."""
+
+    def test_odm_texturing_25d_reported_and_in_totals(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, projects, viewer = td / "runs", td / "projects", td / "viewer"
+            name = "tex25d"
+            _write_bytes(projects / name / "odm_texturing_25d" / "odm_textured_model_geo.obj", 1600)
+            _write_bytes(projects / name / "odm_texturing_25d" / "texture.png", 400)
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, name)
+            rows = {lbl: sz for lbl, _, sz in items}
+            self.assertIn(f"data/odm_projects/{name}/odm_texturing_25d", rows)
+            self.assertEqual(rows[f"data/odm_projects/{name}/odm_texturing_25d"], 1600 + 400)
+            # its bytes are part of both totals (no hardlinks in this fixture)
+            self.assertEqual(logical, 2000)
+            self.assertEqual(unique, 2000)
+            # sorting preserved
+            sizes = [sz for _, _, sz in items]
+            self.assertEqual(sizes, sorted(sizes, reverse=True))
+            lines = format_report(name, items, (logical, unique))
+            self.assertTrue(any("odm_texturing_25d" in l for l in lines))
+            self.assertTrue(any("2.0 KB (2000 bytes) in 1 entries" in l for l in lines))
+
+    def test_odm_texturing_25d_separate_from_odm_texturing(self):
+        # the delivered 3D mesh (odm_texturing/) and the 2.5D twin must be
+        # reported as two independent rows – no cross-counting either way
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, projects, viewer = td / "runs", td / "projects", td / "viewer"
+            name = "twins"
+            _write_bytes(projects / name / "odm_texturing" / "odm_textured_model_geo.obj", 2500)
+            _write_bytes(projects / name / "odm_texturing_25d" / "odm_textured_model_geo.obj", 1600)
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, name)
+            rows = {lbl: sz for lbl, _, sz in items}
+            self.assertEqual(rows[f"data/odm_projects/{name}/odm_texturing"], 2500)
+            self.assertEqual(rows[f"data/odm_projects/{name}/odm_texturing_25d"], 1600)
+            self.assertEqual(logical, 2500 + 1600)
+            self.assertEqual(unique, 2500 + 1600)
+
+    def test_missing_odm_texturing_25d_graceful(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            work, projects, viewer = td / "runs", td / "projects", td / "viewer"
+            work.mkdir()
+            projects.mkdir()
+            viewer.mkdir()
+            # odm_texturing_25d/ missing (e.g. already cleaned) -> skipped, no raise
+            items, (logical, unique) = collect_disk_usage(work, projects, viewer, "ghost")
+            self.assertEqual(items, [])
+            self.assertEqual((logical, unique), (0, 0))
+
+
 class TestCompletedRunBaseline(unittest.TestCase):
     """Deterministic baseline for the measurement path: a miniature of the
     layout a completed `python -m sih3d run` produces (see cmd_run in
@@ -376,6 +431,7 @@ class TestCompletedRunBaseline(unittest.TestCase):
             _write_bytes(pr / "odm_georeferencing" / "odm_georeferenced_model.laz", 5000)
             _write_bytes(pr / "odm_texturing" / "odm_textured_model_geo.obj", 2500)
             _write_bytes(pr / "odm_texturing" / "textures" / "0.png", 3000)
+            _write_bytes(pr / "odm_texturing_25d" / "odm_textured_model_geo.obj", 1600)
             cls = _write_bytes(pr / "sih3d_classified.laz", 4000)
             os.link(cls, pr / "sih3d_filled.laz")  # fill_gaps no-op (holes.py)
             _write_bytes(pr / "sih3d_final.laz", 4500)
@@ -385,13 +441,15 @@ class TestCompletedRunBaseline(unittest.TestCase):
 
             items, (logical, unique) = collect_disk_usage(work, projects, viewer, name)
             rows = {lbl: sz for lbl, _, sz in items}
-            # All 14 target rows present (10 dirs + 3 root LAZs + viewer)...
-            self.assertEqual(len(items), 14)
+            # All 15 target rows present (11 dirs + 3 root LAZs + viewer)...
+            self.assertEqual(len(items), 15)
             self.assertEqual(rows[f"data/runs/{name}/frames"], 5000)
             self.assertEqual(rows[f"data/odm_projects/{name}/images"], 5800)
             # ...odm_georeferenced_model.laz only via its directory row (no double count)...
             self.assertNotIn(f"data/odm_projects/{name}/odm_georeferencing/odm_georeferenced_model.laz", rows)
             self.assertEqual(rows[f"data/odm_projects/{name}/odm_georeferencing"], 5000)
+            # ...odm_texturing_25d/ is reported as its own row...
+            self.assertEqual(rows[f"data/odm_projects/{name}/odm_texturing_25d"], 1600)
             # ...and hardlinked rows remain visible at their full logical size...
             self.assertEqual(rows[f"data/odm_projects/{name}/sih3d_classified.laz"], 4000)
             self.assertEqual(rows[f"data/odm_projects/{name}/sih3d_filled.laz"], 4000)
@@ -399,14 +457,14 @@ class TestCompletedRunBaseline(unittest.TestCase):
             self.assertEqual(sizes, sorted(sizes, reverse=True))
             # Baseline totals: logical sums the rows (shared bytes counted per row),
             # unique counts each inode once.
-            self.assertEqual(logical, 39890)
-            self.assertEqual(unique, 30090)
+            self.assertEqual(logical, 41490)
+            self.assertEqual(unique, 31690)
             # Hardlink savings: frames+masks hardlinked into images (5800) +
             # the no-op classified/filled pair (4000).
             self.assertEqual(logical - unique, 9800)
             lines = format_report(name, items, (logical, unique))
-            self.assertTrue(any("Logical total: 39.0 KB (39890 bytes) in 14 entries" in l for l in lines))
-            self.assertTrue(any("Unique total:" in l and "30090 bytes" in l for l in lines))
+            self.assertTrue(any("Logical total: 40.5 KB (41490 bytes) in 15 entries" in l for l in lines))
+            self.assertTrue(any("Unique total:" in l and "31690 bytes" in l for l in lines))
 
 
 class TestDiskUsageCLI(unittest.TestCase):
