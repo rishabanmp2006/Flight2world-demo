@@ -295,6 +295,13 @@ SIH26158 input is video plus telemetry, but most open datasets ship photos. Thes
   --out data/simulated/aukerman_pass.mp4
 ```
 
+The resulting `.SRT` is a *photo sequence* replayed as a slideshow, not one continuous flight: consecutive
+frames jump tens of metres, which no drone can fly at the slideshow's 0.5 s per frame. The single-pass
+validation reports exactly that (`flight_validation.status = "unknown"`: the telemetry is not a continuous
+flight path) and the run continues unchanged, because the positions themselves are real and OpenDroneMap
+uses them fine — but the report makes no single-pass or metric-accuracy claim for this input. Use a real
+single-pass recording for single-pass compliance.
+
 **AGZ frames → 30 fps video.** Frame *n* of the video must be image `59001 + n`, because the pipeline
 maps video frames back to AGZ image ids:
 

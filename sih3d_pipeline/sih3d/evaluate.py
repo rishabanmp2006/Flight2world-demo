@@ -12,6 +12,92 @@ import numpy as np
 from pyproj import CRS, Transformer
 
 
+def quality_summary(report):
+    """Separate what a run actually established, so no one claim is read as another.
+
+    A finished run can establish several different things and they are not interchangeable: the reconstruction
+    succeeded, the flight complied with the single-pass input model, the model is georeferenced, the point
+    cloud is well covered, the AI classified it, gap filling added estimates.  This function copies the
+    numbers that exist into one block and marks everything else `not_run` / `unknown` with the reason — it
+    never computes a new accuracy figure and never invents one.
+
+    Returns a plain dict (safe to json.dump) with one entry per claim, each carrying `status`, the values it
+    is based on and the report key it came from.
+    """
+    rec = report.get("reconstruction") or {}
+    gps = report.get("gps_fusion") or {}
+    fv = report.get("flight_validation") or {}
+    classified = report.get("classified_cloud") or {}
+    filled = report.get("gap_filling") or {}
+    accuracy = (report.get("accuracy_vs_lidar") or report.get("accuracy_vs_buildings") or
+                report.get("accuracy_camera_positions"))
+
+    out = {k: None for k in ("reconstruction", "single_pass", "georeferencing", "point_cloud",
+                             "ai_classification", "gap_filling")}
+    out["note"] = ("each block states what was measured; 'not_run'/'unknown' means the pipeline has no data "
+                   "for it, and null values are not zeroes")
+
+    out["reconstruction"] = {
+        "status": "success" if rec.get("ok") else ("failed" if rec.get("attempted") else "not_attempted"),
+        "attempts": rec.get("attempts"), "outputs": sorted((report.get("outputs") or {}).keys()) or None,
+        "basis": "report.reconstruction / report.outputs"}
+
+    out["single_pass"] = {
+        "status": fv.get("status", "unknown"), "single_pass": fv.get("single_pass"),
+        "path_efficiency": fv.get("path_efficiency"), "revisit_score": fv.get("revisit_score"),
+        "direction_reversals": fv.get("direction_reversals"), "trajectory_source": fv.get("trajectory_source"),
+        "policy": fv.get("policy"), "overridden": fv.get("overridden", False),
+        "warnings": fv.get("warnings", []), "basis": "report.flight_validation"}
+
+    if accuracy:
+        out["georeferencing"] = {
+            "status": "measured_against_reference", "gps_fusion_quality": gps.get("quality"),
+            "median_horizontal_gps_std_m": gps.get("median_h_std_m"), "fusion_fallback_used": gps.get("fallback_used"),
+            "accuracy_vs_reference": accuracy, "basis": "report.accuracy_*"}
+    elif rec.get("ok"):
+        out["georeferencing"] = {
+            "status": "gps_anchored_no_independent_reference", "gps_fusion_quality": gps.get("quality"),
+            "median_horizontal_gps_std_m": gps.get("median_h_std_m"), "fusion_fallback_used": gps.get("fallback_used"),
+            "accuracy_vs_reference": None,
+            "note": ("no reference data was supplied (--lidar / --citygml / --agz-range), so absolute accuracy "
+                     "is not established: the model is anchored to the (fused) GPS positions above"),
+            "basis": "report.gps_fusion"}
+    else:
+        out["georeferencing"] = {"status": "not_run", "basis": "report.gps_fusion"}
+
+    if classified:
+        out["point_cloud"] = {
+            "status": "measured", "points": classified.get("points"),
+            "seen_by_2plus_cameras": classified.get("seen_by_2plus_cameras"),
+            "median_cameras_per_point": classified.get("median_views"), "basis": "report.classified_cloud"}
+    elif rec.get("ok"):
+        out["point_cloud"] = {"status": "measured_not_classified", "basis": "report.reconstruction",
+                              "note": "AI classification did not run, so per-point camera coverage is unknown"}
+    else:
+        out["point_cloud"] = {"status": "not_run", "basis": "report.reconstruction"}
+
+    if classified:
+        out["ai_classification"] = {"status": "measured", "labelled_share": classified.get("labelled_by_ai"),
+                                    "class_share_of_labelled": classified.get("class_share_of_labelled"),
+                                    "basis": "report.classified_cloud"}
+    else:
+        out["ai_classification"] = {"status": "not_run", "labelled_share": None,
+                                    "note": "AI labels/masks were skipped (--no-ai) or reconstruction failed",
+                                    "basis": "report.classified_cloud"}
+
+    if filled:
+        out["gap_filling"] = {"status": "measured", "inferred_points": filled.get("inferred_points_added"),
+                              "inferred_share": filled.get("inferred_share"),
+                              "measured_points": filled.get("measured_points"),
+                              "median_depth_fit_error": filled.get("median_depth_fit_error"),
+                              "basis": "report.gap_filling"}
+    else:
+        out["gap_filling"] = {"status": "not_run", "inferred_points": None, "inferred_share": None,
+                              "note": "gap filling was skipped (--no-fill / --no-ai) or added no points",
+                              "basis": "report.gap_filling"}
+    return out
+
+
 def project_crs(project):
     first = (Path(project) / "odm_georeferencing" / "coords.txt").read_text().splitlines()[0]
     m = re.match(r"WGS84 UTM (\d+)([NS])", first)

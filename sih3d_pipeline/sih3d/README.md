@@ -39,6 +39,7 @@ Outputs: `data/runs/<name>/report.json` (every stage's numbers and timings) and 
 | Keyframes | `frames.py` | Crops black bars, finds hard cuts, keeps the sharpest frame per ~10% image shift, drops blurry frames |
 | Lens and image clean-up | `frames.py` | Removes lens distortion from a calibration, evens exposure across frames, light filtering against compression blocking |
 | GPS fusion | `fusion.py` | Kalman filter + smoother on GPS and barometer; rejects jumps; per-frame position accuracy |
+| Single-pass flight validation | `flight.py` | Measures the fused trajectory (keyframe track *and* telemetry track): path length, displacement, path efficiency, dominant axis and lateral spread, direction reversals, revisits, telemetry continuity; groups video shots into logical flights; reports `flight_validation` and applies the policy below |
 | AI scene labels | `semantics.py` | SegFormer labels every keyframe: ground, low/high vegetation, building, water, road, vehicle, person, structure, sky |
 | AI masks | `masks.py` | YOLO11-seg outlines moving objects; with sky/vehicle/person labels they are excluded from dense reconstruction |
 | Reconstruction | `odm.py` | OpenDroneMap in Docker with per-frame GPS accuracy, frame-order matching, rolling-shutter correction, reconstruction limited to the area around the camera track (`--auto-boundary`), lens model choice (`--camera-lens`); threads sized to memory, automatic retry after out-of-memory |
@@ -47,6 +48,76 @@ Outputs: `data/runs/<name>/report.json` (every stage's numbers and timings) and 
 | Tilt correction (experimental, `--level`) | `level.py` | Uses vertical AI-classified walls and level ground to remove tilt a straight single pass leaves; unreliable in narrow streets, so off by default |
 | Accuracy | `evaluate.py`, `citygml.py` | Camera positions vs reference poses; cloud vs reference LiDAR (as georeferenced, after rigid alignment, scale); walls and roofs vs official LoD2 buildings |
 | Viewer | `export.py`, `viewer/index.html` | Textured mesh or points coloured by photo, AI class, or confidence (AI-estimated points in blue); click-to-measure |
+
+## Single-pass flight assumption
+
+Flight2World reconstructs **one continuous forward drone pass**: the drone enters the scene once, flies
+through it while the camera keeps looking at what is ahead of it, and leaves. The model is anchored to that
+one GPS track, so the pipeline measures the track and states whether the input really is one pass.
+
+**What single-pass means here.** One continuous trajectory that makes net forward progress — the drone ends
+away from where it started and most of the travelled path is forward rather than back over ground already
+covered. **What it does not mean.** A straight line, or a video without cuts. Curves are valid (a
+half-circle still scores 0.64 path efficiency; the gate is 0.55), and turning, climbing, slowing down,
+hovering briefly or noisy GPS are all normal. Nothing rotates, straightens or warps the model to make a track
+look straight — `level.py` still refuses to level a flight that is not one straight pass.
+
+**What is checked** (`sih3d/flight.py`, deterministic, on two trajectories: the fused keyframe positions that
+OpenDroneMap is given, and the denser telemetry track):
+
+| metric | meaning | role in the verdict |
+|---|---|---|
+| `path_length_m`, `displacement_m`, `path_efficiency` | travelled path vs start-to-end distance | `< 0.15` invalid, `< 0.55` suspicious |
+| `dominant_axis`, `dominant_heading_deg`, `lateral_deviation_m`, `straightness` | PCA travel direction; how far the track strays from it | reported only — curvature never rejects |
+| `forward_fraction`, `direction_reversals` | share of along-axis travel going backwards; significant turn-backs | `> 20%` / `> 2` suspicious, `> 55%` invalid |
+| `revisit_score`, `loop_closures` | how much of the track comes back within 4–20 m of a place it left at least twice that radius earlier, and how many such excursions | `> 0.25` suspicious, `≥ 0.60` with little net progress invalid |
+| `discontinuous_step_fraction`, `max_speed_mps` | share of ≥ 1 s windows implying more than 30 m/s (108 km/h) | `> 15%` → the telemetry is not a flight path: `unknown` |
+| `position_sigma_m`, `gps_outliers_removed`, `thinning_stride` | estimated GPS jitter, spikes removed, and the noise-aware centreline the metrics are measured on | noise is measured and removed; it can never produce a negative verdict |
+
+Every threshold is either a fraction of the flight's own scales or a fixed physical limit (the speed of a
+consumer drone), and the values that produced a verdict are written into
+`report.json → flight_validation.thresholds`. Isolated GPS spikes are removed before measuring (never the
+first/last fix, or the measured start and end of the flight would be wrong), and a track whose spacing is
+still dominated by GPS jitter can only ever come out `unknown`, never `suspicious`/`invalid`.
+
+A track is judged only where its positions are real. If more than 5% of the keyframes fall outside the
+telemetry's time range their positions are extrapolated, so the keyframe trajectory — the one OpenDroneMap
+is given — is reported as `unknown` and a positive verdict is downgraded to `unknown` (never a rejection)
+with the reason, even when the telemetry trajectory itself looks like a clean single pass.
+
+**Verdicts and what the run does** (`--flight-validation enforce` is the default):
+
+| status | meaning | default action |
+|---|---|---|
+| `valid` | one continuous forward pass | continue |
+| `valid_with_warning` | single pass, but short track or coarse evidence | continue + warning |
+| `unknown` | the telemetry can neither support nor rule out a single pass (photo-sequence slideshow, clock mismatch, too few fixes, all-noise track) | continue + the limitation is stated loudly — never a single-pass claim |
+| `suspicious` | evidence of repeated coverage or several turn-backs | stop unless `--allow-multi-pass` |
+| `invalid` | closed loop, out-and-back, or near-zero net progress | stop unless `--allow-multi-pass` |
+
+```bash
+# advisory only, or no trajectory check at all
+python -m sih3d run ... --flight-validation warn
+python -m sih3d run ... --flight-validation off      # the report says the check was skipped
+
+# research/testing: reconstruct a circular or multi-pass flight anyway (the verdict is still recorded)
+python -m sih3d run ... --allow-multi-pass
+
+# keep only the keyframes of the largest logical flight (cuts inside one continuous flight change nothing)
+python -m sih3d run ... --segment single-pass
+```
+
+A *video shot* (a run of frames between cuts) is edit information; a *logical flight* is the physical
+trajectory. The keyframe stage therefore groups shots into logical flights from the telemetry, keeps
+`all`/`longest` behaviour available, and never equates the two: a flight whose footage has hard cuts stays one
+flight, and a video holding several flights is reported as several (`keyframes.flights`).
+
+`report.json` gains `flight_validation` (status, `single_pass`, path length, displacement, efficiency,
+dominant axis, reversals, revisit score, trajectory start/end, telemetry coverage, warnings and the
+thresholds used) and `quality`, which keeps six claims apart — reconstruction success, single-pass
+compliance, georeferencing, point-cloud quality, AI classification coverage, gap-filling amount. Where a
+metric cannot be established (no independent reference, stage skipped) it is `null`/`not_run` with the
+reason; no accuracy number is invented.
 
 ## Problem statement coverage
 
@@ -113,3 +184,9 @@ some runs by up to ~7°; heading and along-street slope stay within ~1.5°.
   points reached ~350 km; with `--camera-lens fisheye` and `--auto-boundary` it stayed one model (52/53 cameras).
 - A single straight pass leaves the model's roll about the flight line unconstrained by GPS: three identical Zurich
   runs came out tilted about 8°, 19° and ~36° against official walls. See `level.py` for the correction and its status.
+- The single-pass check judges *shape*, not accuracy: a pass can be perfectly single-pass and still be
+  georeferenced only as well as its GPS. It also cannot judge a trajectory whose timestamps are not the flight
+  clock (a photo sequence played as a slideshow, e.g. the Aukerman fixture) — that input is reported as
+  `unknown` with the reason, and the run continues exactly as before, but no single-pass or metric-accuracy
+  claim is made for it. Genuinely re-visited ground (orbits, repeated lanes, out-and-back flights) is caught
+  and needs `--allow-multi-pass`.
