@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from scripts.prepare_dataset import log, write_gps_exif
-from sih3d import frames, fusion, odm, telemetry
+from sih3d import flight, frames, fusion, odm, telemetry
 
 
 class Timer:
@@ -65,7 +65,9 @@ def cmd_run(a):
     timer = Timer()
     records: list = []
     report = {"name": a.name, "mode": a.mode, "inputs": {"video": str(a.video), "telemetry": str(a.telemetry),
-                                                        "calibration": str(a.calib or "")}}
+                                                        "calibration": str(a.calib or "")},
+              # recorded from the start, so even a run stopped before Docker says so in report.json
+              "reconstruction": {"attempted": False}}
 
     def persist():
         """Persist the run state (keyframes.json + report.json) as it stands right now."""
@@ -85,12 +87,17 @@ def cmd_run(a):
         raise
     log(f"Telemetry: fixes: {report['telemetry']['gps_fixes']} ({report['telemetry']['source']})")
 
+    frame_times = None
+    if a.agz_range:  # video frame index -> telemetry clock (AGZ frames carry their own log timestamps)
+        _, frame_times = telemetry.agz_frame_times(a.telemetry, *a.agz_range)
+
     try:
         with timer("keyframes"):
             calib = frames.load_calibration(a.calib) if a.calib else None
             records, report["keyframes"] = frames.extract_keyframes(
                 a.video, frames_dir, calib=calib, sample_fps=a.sample_fps, min_shift=a.min_shift, max_gap=a.max_gap,
-                segment=a.segment, normalise=not a.no_normalise, deblock=not a.no_deblock, max_size=a.max_size)
+                segment=a.segment, normalise=not a.no_normalise, deblock=not a.no_deblock, max_size=a.max_size,
+                telemetry=tel, frame_times=frame_times)
             if len(records) < 5:
                 raise ValueError(f"only {len(records)} usable keyframes extracted")
             report["keyframes"]["ok"] = True
@@ -102,14 +109,14 @@ def cmd_run(a):
             raise SystemExit(f"Only {len(records)} keyframes: the video is too short or static for reconstruction")
         raise
     log(f"Keyframes: input frames: {report['keyframes']['frames']}  selected frames: {len(records)}  "
-        f"selection mode: {a.segment}")
+        f"selection mode: {a.segment}  video shots: {report['keyframes'].get('shots', '?')}  "
+        f"logical flights: {report['keyframes'].get('logical_flights', '?')}")
 
     try:
         with timer("gps_fusion"):
             times = np.array([r["t"] for r in records])
             if a.agz_range:
-                _, ft = telemetry.agz_frame_times(a.telemetry, *a.agz_range)
-                times = ft[np.array([r["frame"] for r in records])]
+                times = frame_times[np.array([r["frame"] for r in records])]
             fused = fusion.fuse(tel, times)
             raw = {k: np.interp(times, tel.t, getattr(tel, k)) for k in ("lat", "lon", "alt")}
             focal35 = a.focal35 or report["keyframes"]["focal35"]
@@ -130,7 +137,24 @@ def cmd_run(a):
         f"quality: {st['quality']}")
     for w in st["warnings"]:
         log(f"WARNING: {w}")
-    persist()  # telemetry + keyframes + fusion state is on disk before anything heavy runs
+
+    # Single-pass flight validation: pure measurement of the trajectory the reconstruction is about to use.
+    # It never changes the reconstruction itself; a verdict of suspicious/invalid only stops the run when the
+    # policy says so (--flight-validation enforce, the default) and there is no explicit override.
+    try:
+        with timer("flight_validation"):
+            report["flight_validation"] = flight.validate_run(
+                records, tel, times=times, fusion=report["gps_fusion"], keyframe_report=report["keyframes"],
+                policy=a.flight_validation, allow_multi_pass=a.allow_multi_pass)
+    except (SystemExit, Exception) as e:  # a validator problem must not cost a working reconstruction
+        report["flight_validation"] = {"mode": "single_pass", "policy": a.flight_validation, "status": "unknown",
+                                       "single_pass": None, "action": "continue", "overridden": False,
+                                       "warnings": [f"single-pass flight validation could not run: {e}"]}
+    for line in flight.report_lines(report["flight_validation"]):
+        log(line)
+    persist()  # telemetry + keyframes + fusion + flight verdict are on disk before anything heavy runs
+    if report["flight_validation"].get("action") == "stop":
+        raise SystemExit(report["flight_validation"].get("decision_reason", "flight validation failed"))
     names = [r["name"] for r in records]
 
     labels_dir = masks_dir = None
@@ -143,7 +167,6 @@ def cmd_run(a):
             masks_dir = work / "masks"
             report["ai_masks"] = masks.make_masks(frames_dir, names, masks_dir, labels_dir=labels_dir)
 
-    report["reconstruction"] = {"attempted": False}
     persist()  # everything before Docker is persisted BEFORE Docker is invoked
     docker_path = shutil.which("docker")
     log(f"Docker: {docker_path if docker_path else 'unavailable (docker executable not found on PATH)'}")
@@ -190,6 +213,7 @@ def cmd_run(a):
         if a.agz_range:
             report["accuracy_camera_positions"] = evaluate.compare_agz(project, records, a.telemetry, a.agz_range[0])
         report.update(ground_truth_checks(project, a, cloud_path=final_cloud))
+        report["quality"] = evaluate.quality_summary(report)
 
     with timer("viewer_export"):
         from sih3d import export
@@ -219,8 +243,15 @@ def build_parser():
     r.add_argument("--mode", choices=["preview", "full"], default="full")
     r.add_argument("--segment", default="all",
                    help="keyframe shots to keep: all (default - keeps every detected shot, so multi-shot/"
-                        "photo-sequence surveys keep their full coverage), longest (only the single longest "
-                        "shot), or a shot index")
+                        "photo-sequence surveys keep their full coverage), single-pass (only the shots of the "
+                        "largest logical flight, so video cuts inside one continuous flight change nothing), "
+                        "longest (only the single longest shot), or a shot index")
+    r.add_argument("--flight-validation", choices=list(flight.POLICIES), default="enforce",
+                   help="single-pass policy (default enforce): enforce stops a suspicious/invalid flight unless "
+                        "--allow-multi-pass is given, warn only reports it, off skips the check")
+    r.add_argument("--allow-multi-pass", action="store_true",
+                   help="research/testing override: continue even when the flight is not a single pass "
+                        "(the verdict is still measured, reported and logged)")
     r.add_argument("--sample-fps", type=float, default=5.0)
     r.add_argument("--min-shift", type=float, default=0.10)
     r.add_argument("--max-gap", type=float, default=2.0)
